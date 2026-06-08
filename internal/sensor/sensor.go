@@ -49,6 +49,8 @@ func New() (*Sensor, error) {
 		{"syscalls", "sys_enter_openat2", objs.TraceOpenat2},
 		{"syscalls", "sys_exit_openat2", objs.TraceOpenat2Exit},
 		{"syscalls", "sys_enter_write", objs.TraceWrite},
+		{"syscalls", "sys_enter_pwrite64", objs.TracePwrite64},
+		{"syscalls", "sys_enter_writev", objs.TraceWritev},
 		{"syscalls", "sys_enter_rename", objs.TraceRename},
 		{"syscalls", "sys_enter_renameat", objs.TraceRenameat},
 		{"syscalls", "sys_enter_renameat2", objs.TraceRenameat2},

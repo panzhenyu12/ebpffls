@@ -44,7 +44,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 归一化事件 (struct event → agent.Event)
 ```
 
-**覆盖评估：** 核心文件变异调用约 70–80%；普通 `write` 原地加密链已做 fd→path 评分，pwrite/writev、mmap/io_uring 仍是弱点。
+**覆盖评估：** 核心文件变异调用约 75–85%；`write`/`pwrite64`/`writev` 原地加密链已做 fd→path 评分，mmap/io_uring 仍是弱点。
 
 ---
 
@@ -55,7 +55,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 | rename → 可疑后缀 / 赎金信 | 高 | 轨1 |
 | 已知 hash 样本 | 高 | 轨3 |
 | 保护域批量 open 改写 | 中 | 轨2→4 |
-| 零日原地 write 加密 | 中 | 轨2 fd→path 评分；已标记后 write kprobe 可补杀 |
+| 零日原地 write 加密 | 中高 | 轨2 fd→path 评分覆盖 write/pwrite64/writev；已标记后 kprobe 可补杀 |
 | fork 子进程逃逸 | 低 | exec_after_blocked 未实现 |
 | comm 伪装 trusted | 中 | 可配置 comm + exe 路径 + uid；默认策略已启用严格身份 |
 | mmap / io_uring | 无 | 未观测 |
@@ -65,7 +65,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 ## 5. 已知代码缺口
 
 1. BPF IOC 硬编码，与 yaml 不同步；硬规则无 `protected_dirs` 作用域；且依赖 active BPF LSM
-2. `EventWrite` 已基于 agent fd→path 缓存计分；dup/close、相对 dirfd、pwrite/writev 路径评分仍待补齐
+2. `EventWrite` 已基于 agent fd→path 缓存计分；dup/close、相对 dirfd、mmap/io_uring 路径评分仍待补齐
 3. kprobe 仅 `bpf_send_signal`，不 `bpf_override_return`
 4. kprobe 符号仅 x86_64
 5. `exec_after_blocked` 作为评分规则未实现；kill 传播已实现

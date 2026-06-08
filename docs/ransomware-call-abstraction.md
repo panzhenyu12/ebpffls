@@ -89,7 +89,7 @@ truncate(path, 0) 或 ftruncate(fd, 0)
 |----------|------------|----------|------------|
 | `sys_enter_execve` | `EVENT_EXEC` | path=filename | 黑名单哈希 |
 | `sys_exit_openat` / `sys_exit_openat2` | `EVENT_OPEN` | path, arg0=flags, arg1=fd | 写意图、赎金信、扩展名；建立 fd→path 缓存 |
-| `sys_enter_write` | `EVENT_WRITE` | arg0=fd, size | 使用 agent fd→path 缓存做保护域/备份域评分 |
+| `sys_enter_write` / `sys_enter_pwrite64` / `sys_enter_writev` | `EVENT_WRITE` | arg0=fd, size | 使用 agent fd→path 缓存做保护域/备份域评分 |
 | `sys_enter_rename` | `EVENT_RENAME` | path, path2 | 后缀替换 |
 | `sys_enter_renameat` | `EVENT_RENAME` | path, path2 | 后缀替换 |
 | `sys_enter_renameat2` | `EVENT_RENAME` | path, path2, arg0=flags | 后缀替换 |
@@ -128,7 +128,6 @@ truncate(path, 0) 或 ftruncate(fd, 0)
 
 | 调用面 | 语义操作 | 优先级 |
 |--------|----------|--------|
-| `pwrite64` / `writev` path-aware scoring | `SO_ENCRYPT_WRITE` | P1 |
 | `getdents64` / `stat` | `SO_SCAN` | P2 |
 | `mmap` + 写 | `SO_ENCRYPT_WRITE` | P1 |
 | `copy_file_range` | 模式 C | P1 |
@@ -178,7 +177,7 @@ semantic_rules:
 | 问题 | 答案 |
 |------|------|
 | 勒索调用能否抽象？ | **能**，分为语义操作 → 调用面 → 归一化事件 |
-| 当前版覆盖多少？ | 核心文件变异调用约 **70–80%**；write 已覆盖普通 fd 路径评分，但 pwrite/writev、dup/close、相对 dirfd 仍是弱点 |
+| 当前版覆盖多少？ | 核心文件变异调用约 **75–85%**；write/pwrite64/writev 已覆盖普通 fd 路径评分，但 dup/close、相对 dirfd、mmap/io_uring 仍是弱点 |
 | 下一步抽象重点？ | 扩展 `SO_ENCRYPT_WRITE` 调用面；统一 IOC 策略源；引入特征向量 |
 
 相关文档：[strategy.md](./strategy.md)、[roadmap.md](./roadmap.md)

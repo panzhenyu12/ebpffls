@@ -564,6 +564,32 @@ int trace_write(struct trace_event_raw_sys_enter *ctx)
 	return 0;
 }
 
+SEC("tracepoint/syscalls/sys_enter_pwrite64")
+int trace_pwrite64(struct trace_event_raw_sys_enter *ctx)
+{
+	struct event *e = new_event(EVENT_WRITE);
+	if (!e)
+		return 0;
+
+	e->arg0 = (int)ctx->args[0];
+	e->size = (__u64)ctx->args[2];
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_writev")
+int trace_writev(struct trace_event_raw_sys_enter *ctx)
+{
+	struct event *e = new_event(EVENT_WRITE);
+	if (!e)
+		return 0;
+
+	e->arg0 = (int)ctx->args[0];
+	e->size = (__u64)ctx->args[2];
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
 SEC("tracepoint/syscalls/sys_enter_renameat")
 int trace_renameat(struct trace_event_raw_sys_enter *ctx)
 {

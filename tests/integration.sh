@@ -266,6 +266,8 @@ test_fd_write_path_scoring_kills() {
   local policy="${TMP_DIR}/fd-write.yaml"
   local agent_log="${TMP_DIR}/fd-write-agent.log"
   local sim="${TMP_DIR}/fd-write.py"
+  local pwrite_sim="${TMP_DIR}/fd-pwrite.py"
+  local writev_sim="${TMP_DIR}/fd-writev.py"
   mkdir -p "${dir}"
   : >"${bl}"
   write_policy "${policy}" fd-write-test 5 kill "${dir}" "${bl}"
@@ -282,6 +284,34 @@ print("survived")
 PY
   expect_killed "fd write path scoring" python3 "${sim}"
   wait_for_log "${agent_log}" 'write syscall on protected fd' "fd write"
+  stop_agent
+
+  start_agent "${policy}" "${agent_log}"
+  cat >"${pwrite_sim}" <<PY
+import os, time
+p = "${dir}/single-fd-pwrite.txt"
+fd = os.open(p, os.O_CREAT | os.O_RDWR, 0o600)
+for i in range(100):
+    os.pwrite(fd, b"x" * 4096, i * 4096)
+    time.sleep(0.02)
+print("survived")
+PY
+  expect_killed "fd pwrite path scoring" python3 "${pwrite_sim}"
+  wait_for_log "${agent_log}" 'write syscall on protected fd' "fd pwrite"
+  stop_agent
+
+  start_agent "${policy}" "${agent_log}"
+  cat >"${writev_sim}" <<PY
+import os, time
+p = "${dir}/single-fd-writev.txt"
+fd = os.open(p, os.O_CREAT | os.O_WRONLY, 0o600)
+for i in range(100):
+    os.writev(fd, [b"x" * 2048, b"y" * 2048])
+    time.sleep(0.02)
+print("survived")
+PY
+  expect_killed "fd writev path scoring" python3 "${writev_sim}"
+  wait_for_log "${agent_log}" 'write syscall on protected fd' "fd writev"
   stop_agent
 }
 

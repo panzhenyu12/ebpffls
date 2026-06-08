@@ -31,7 +31,7 @@ syscalls map to semantic ransomware operations.
 |---------|-------------|-------------|---------|-------------|
 | `execve` | Spawn | tracepoint | blacklist only | kprobe; optional LSM after mark |
 | `openat` / `openat2` | Stage open | tracepoint exit | protected write-open; fd→path cache | kprobe; optional LSM |
-| `write` | Encrypt in-place | tracepoint | protected/backup fd path when fd was observed | kprobe after mark; optional LSM |
+| `write` / `pwrite64` / `writev` | Encrypt in-place | tracepoint | protected/backup fd path when fd was observed | kprobe after mark; optional LSM |
 | `rename` / `renameat(2)` | Suffix replace | tracepoint | protected rename; protected suspicious suffix is immediate IOC | kprobe; optional LSM IOC |
 | `unlinkat` | Delete | tracepoint | protected/backup | kprobe; optional LSM |
 | `truncate` / `ftruncate` | Truncate | tracepoint | protected/backup; ftruncate uses fd→path cache | kprobe; optional LSM |
@@ -86,7 +86,7 @@ process name.
 Within a sliding window (`window`, default 10s), per-TGID score includes:
 
 - write-open on protected or backup paths
-- write syscalls on protected or backup file descriptors observed through open/openat/openat2
+- write/pwrite64/writev syscalls on protected or backup file descriptors observed through open/openat/openat2
 - truncate/ftruncate, rename, unlink on protected or backup paths
 - suspicious extensions and ransom note filenames on create
 - backup destruction bonus
@@ -97,7 +97,7 @@ writes the TGID into `blocked_tgids`.
 
 **Partially implemented:** blocked lineage exec is re-blocked as a kill action.
 
-**Partially implemented:** fd path-aware scoring for write/ftruncate uses an agent
+**Partially implemented:** fd path-aware scoring for write/pwrite64/writev/ftruncate uses an agent
 fd→path cache and currently does not resolve dup/close lifetimes or relative dirfd paths.
 
 **Not yet implemented:** `exec_after_blocked` as a score-only rule, yaml-driven BPF IOC maps.

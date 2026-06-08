@@ -86,7 +86,7 @@ sudo ./bin/ebpffls monitor --config configs/ransomware.yaml --debug-events
 Within a sliding window, the agent scores:
 
 - write-open on protected paths
-- write syscalls on protected or backup file descriptors observed through open/openat/openat2
+- write/pwrite64/writev syscalls on protected or backup file descriptors observed through open/openat/openat2
 - truncate, ftruncate, rename, and unlink activity
 - suspicious extensions and ransom note filenames
 - backup/snapshot path destruction
@@ -152,7 +152,7 @@ by only spoofing its comm name.
 ## Limitations (current)
 
 - x86_64 kprobe symbols only
-- fd-based `write`/`ftruncate` scoring depends on fd→path state from observed open/openat/openat2; close/dup and relative dirfd resolution are still limited
+- fd-based `write`/`pwrite64`/`writev`/`ftruncate` scoring depends on fd→path state from observed open/openat/openat2; close/dup and relative dirfd resolution are still limited
 - BPF IOC rules hardcoded; not fully synced with YAML; require active BPF LSM
 - `deny` requires active BPF LSM (`bpf` in `/sys/kernel/security/lsm`)
 - No mmap / io_uring / network egress coverage
