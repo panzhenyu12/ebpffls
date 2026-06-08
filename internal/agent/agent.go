@@ -484,10 +484,21 @@ func (a *Agent) score(ev sensor.Event) (int, string) {
 			return a.policy.Scores.Unlink, "unlink in protected scope"
 		}
 	case sensor.EventTruncate:
+		if path == "" {
+			path = a.fdPath(ev.TGID, ev.Arg0)
+			backup = a.inBackupScope(path)
+			protected = a.inProtectedScope(path)
+		}
 		if backup {
+			if ev.Path == "" {
+				return a.policy.Scores.Truncate + a.policy.Scores.BackupDestroy, "backup fd truncation"
+			}
 			return a.policy.Scores.Truncate + a.policy.Scores.BackupDestroy, "backup truncation"
 		}
 		if protected {
+			if ev.Path == "" {
+				return a.policy.Scores.Truncate, "ftruncate on protected fd"
+			}
 			return a.policy.Scores.Truncate, "truncate in protected scope"
 		}
 	}

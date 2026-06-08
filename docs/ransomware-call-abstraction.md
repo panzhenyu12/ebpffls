@@ -96,7 +96,7 @@ truncate(path, 0) 或 ftruncate(fd, 0)
 | `sys_enter_unlink` | `EVENT_UNLINK` | path | 删除/清痕 |
 | `sys_enter_unlinkat` | `EVENT_UNLINK` | path | 删除/清痕 |
 | `sys_enter_truncate` | `EVENT_TRUNCATE` | path, size | 截断 |
-| `sys_enter_ftruncate` | `EVENT_TRUNCATE` | arg0=fd, size | 截断（**无 path**） |
+| `sys_enter_ftruncate` | `EVENT_TRUNCATE` | arg0=fd, size | 通过 agent fd→path 缓存解析保护域/备份域 |
 
 ### 4.2 快轨执法（BPF LSM，无需先标记 TGID）
 

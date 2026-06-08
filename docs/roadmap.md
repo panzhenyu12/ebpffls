@@ -61,7 +61,7 @@
 | 2.2 | yaml 支持 `rules[]`（when 组合 + action） | L3 可组合策略 |
 | 2.3 | 加密状态机：`SCAN`→`STAGE`→`FINALIZE`（先实现 STAGE/FINALIZE） | 模式识别 |
 | 2.4 | trust 模型升级：comm + exe 路径 + uid；备份破坏不减分 | 降绕过 |
-| 2.5 | ftruncate fd→path 解析 | 补齐 `SO_TRUNCATE` |
+| 2.5 | ftruncate fd→path 解析 | 已完成：复用 open/openat/openat2 fd→path 缓存 |
 | 2.6 | 结构化 metrics：alert/block/blacklist 计数导出 | 可运营 |
 
 ### Phase 2 验收标准

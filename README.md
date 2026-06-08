@@ -87,7 +87,7 @@ Within a sliding window, the agent scores:
 
 - write-open on protected paths
 - write syscalls on protected or backup file descriptors observed through open/openat/openat2
-- truncate, rename, and unlink activity
+- truncate, ftruncate, rename, and unlink activity
 - suspicious extensions and ransom note filenames
 - backup/snapshot path destruction
 - high-rate bonus when open/write count ≥ 64
@@ -135,7 +135,7 @@ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ## Limitations (current)
 
 - x86_64 kprobe symbols only
-- `write` path scoring depends on fd→path state from observed open/openat/openat2; close/dup and relative dirfd resolution are still limited
+- fd-based `write`/`ftruncate` scoring depends on fd→path state from observed open/openat/openat2; close/dup and relative dirfd resolution are still limited
 - BPF IOC rules hardcoded; not fully synced with YAML; require active BPF LSM
 - `deny` requires active BPF LSM (`bpf` in `/sys/kernel/security/lsm`)
 - No mmap / io_uring / network egress coverage

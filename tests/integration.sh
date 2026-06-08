@@ -304,6 +304,7 @@ test_unlink_and_truncate_kill() {
   local agent_log="${TMP_DIR}/destructive-agent.log"
   local unlink_sim="${TMP_DIR}/unlink.py"
   local trunc_sim="${TMP_DIR}/truncate.py"
+  local ftrunc_sim="${TMP_DIR}/ftruncate.py"
   mkdir -p "${dir}"
   : >"${bl}"
   write_policy "${policy}" destructive-test 6 kill "${dir}" "${bl}"
@@ -332,6 +333,21 @@ time.sleep(5)
 print("survived")
 PY
   expect_killed "truncate scoring" python3 "${trunc_sim}"
+  stop_agent
+
+  write_policy "${policy}" destructive-test 7 kill "${dir}" "${bl}"
+  start_agent "${policy}" "${agent_log}"
+  cat >"${ftrunc_sim}" <<PY
+import os, time
+p = "${dir}/ftruncate-me.txt"
+fd = os.open(p, os.O_CREAT | os.O_RDWR, 0o600)
+os.write(fd, b"data")
+os.ftruncate(fd, 0)
+time.sleep(5)
+print("survived")
+PY
+  expect_killed "ftruncate fd scoring" python3 "${ftrunc_sim}"
+  wait_for_log "${agent_log}" 'ftruncate on protected fd' "ftruncate fd"
   stop_agent
 }
 
