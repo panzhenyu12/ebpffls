@@ -130,7 +130,7 @@ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ## Limitations (current)
 
 - x86_64 kprobe symbols only
-- `write` not in kprobe enforcement list; not path-scored in agent
+- `write` is in kprobe enforcement for already-marked TGIDs, but is not path-scored in agent
 - BPF IOC rules hardcoded; not fully synced with YAML; require active BPF LSM
 - `deny` requires active BPF LSM (`bpf` in `/sys/kernel/security/lsm`)
 - No mmap / io_uring / network egress coverage

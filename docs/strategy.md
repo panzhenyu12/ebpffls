@@ -31,8 +31,8 @@ syscalls map to semantic ransomware operations.
 |---------|-------------|-------------|---------|-------------|
 | `execve` | Spawn | tracepoint | blacklist only | kprobe; optional LSM after mark |
 | `openat` | Stage open | tracepoint | protected write-open | kprobe; optional LSM |
-| `write` | Encrypt in-place | tracepoint | **not scored yet** | optional LSM after mark; **no kprobe** |
-| `renameat(2)` | Suffix replace | tracepoint | protected rename | kprobe; optional LSM IOC |
+| `write` | Encrypt in-place | tracepoint | **not scored yet** | kprobe after mark; optional LSM |
+| `rename` / `renameat(2)` | Suffix replace | tracepoint | protected rename; protected suspicious suffix is immediate IOC | kprobe; optional LSM IOC |
 | `unlinkat` | Delete | tracepoint | protected/backup | kprobe; optional LSM |
 | `truncate` / `ftruncate` | Truncate | tracepoint | protected/backup | kprobe; optional LSM |
 
@@ -53,6 +53,9 @@ Gaps: `mmap`, `copy_file_range`, `io_uring`, directory scan syscalls — see
 - CLI: `--dry-run=true` by default, so first runs only alert unless you pass `--dry-run=false`
 
 Hash blacklist matches always enforce kill (independent of policy action).
+Protected-scope high-confidence IOC events, such as ransom-note creation or
+rename to a suspicious extension, also enforce immediately without waiting for
+the behavior threshold.
 
 On the current reference server, `CONFIG_BPF_LSM=y` is available but `bpf` is
 not listed in `/sys/kernel/security/lsm`, so the reliable enforcement path is
@@ -83,8 +86,10 @@ Within a sliding window (`window`, default 10s), per-TGID score includes:
 When score ≥ `threshold` (default 45), the agent alerts and (unless dry-run)
 writes the TGID into `blocked_tgids`.
 
-**Not yet implemented:** `exec_after_blocked` scoring, `write` path-aware scoring,
-yaml-driven BPF IOC maps, protected-scope IOC enforcement.
+**Partially implemented:** blocked lineage exec is re-blocked as a kill action.
+
+**Not yet implemented:** `exec_after_blocked` as a score-only rule, `write` path-aware scoring,
+yaml-driven BPF IOC maps.
 
 ## Architecture diagram
 

@@ -90,8 +90,10 @@ truncate(path, 0) 或 ftruncate(fd, 0)
 | `sys_enter_execve` | `EVENT_EXEC` | path=filename | 黑名单哈希 |
 | `sys_enter_openat` | `EVENT_OPEN` | path, arg0=flags | 写意图、赎金信、扩展名 |
 | `sys_enter_write` | `EVENT_WRITE` | arg0=fd, size | **当前不计分** |
+| `sys_enter_rename` | `EVENT_RENAME` | path, path2 | 后缀替换 |
 | `sys_enter_renameat` | `EVENT_RENAME` | path, path2 | 后缀替换 |
 | `sys_enter_renameat2` | `EVENT_RENAME` | path, path2, arg0=flags | 后缀替换 |
+| `sys_enter_unlink` | `EVENT_UNLINK` | path | 删除/清痕 |
 | `sys_enter_unlinkat` | `EVENT_UNLINK` | path | 删除/清痕 |
 | `sys_enter_truncate` | `EVENT_TRUNCATE` | path, size | 截断 |
 | `sys_enter_ftruncate` | `EVENT_TRUNCATE` | arg0=fd, size | 截断（**无 path**） |
@@ -120,13 +122,13 @@ truncate(path, 0) 或 ftruncate(fd, 0)
 | LSM `path_rename` / `inode_rename` | rename | `-EPERM` / SIGKILL（需 active BPF LSM） |
 | LSM `path_unlink` | unlink | `-EPERM` / SIGKILL（需 active BPF LSM） |
 | LSM `bprm_check_security` | execve | `-EPERM` / SIGKILL（需 active BPF LSM） |
-| kprobe `__x64_sys_*` | openat/rename/unlink/truncate/ftruncate/execve | SIGKILL（**无 write**） |
+| kprobe `__x64_sys_*` | openat/rename/unlink/truncate/ftruncate/execve/write/pwrite64/writev | SIGKILL |
 
 ### 4.4 未覆盖调用面（缺口）
 
 | 调用面 | 语义操作 | 优先级 |
 |--------|----------|--------|
-| `write` / `pwrite` | `SO_ENCRYPT_WRITE` | **P0** |
+| `write` path-aware scoring | `SO_ENCRYPT_WRITE` | **P0** |
 | `getdents64` / `stat` | `SO_SCAN` | P2 |
 | `mmap` + 写 | `SO_ENCRYPT_WRITE` | P1 |
 | `copy_file_range` | 模式 C | P1 |
@@ -147,7 +149,7 @@ truncate(path, 0) 或 ftruncate(fd, 0)
 | **Rate** | events/s；write bytes/s | open_write > 30/10s |
 | **Lineage** | ppid；blocked 祖先；exe hash | parent_blocked → block child |
 
-当前实现仅有 Scope（路径前缀）+ 部分 Pattern（扩展名/赎金信）+ 弱 Rate（open 计数），**Lineage 未实现**。
+当前实现已有 Scope（路径前缀）+ 部分 Pattern（扩展名/赎金信）+ 弱 Rate（open 计数），并对 blocked lineage 的 exec 做 kill 传播；完整 Lineage 特征仍未实现。
 
 ---
 
@@ -176,7 +178,7 @@ semantic_rules:
 | 问题 | 答案 |
 |------|------|
 | 勒索调用能否抽象？ | **能**，分为语义操作 → 调用面 → 归一化事件 |
-| 当前版覆盖多少？ | 核心文件变异调用约 **60–70%**；**write 加密链最弱** |
+| 当前版覆盖多少？ | 核心文件变异调用约 **65–75%**；**write 路径感知评分仍是弱点** |
 | 下一步抽象重点？ | 补齐 `SO_ENCRYPT_WRITE`；统一 IOC 策略源；引入特征向量 |
 
 相关文档：[strategy.md](./strategy.md)、[roadmap.md](./roadmap.md)

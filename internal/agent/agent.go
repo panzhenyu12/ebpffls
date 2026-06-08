@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,6 +26,8 @@ type Agent struct {
 	sensor    *sensor.Sensor
 	options   Options
 	procs     map[uint32]*procState
+	blockedMu sync.RWMutex
+	blocked   map[uint32]struct{}
 	blacklist *blacklist
 	hashes    *hashCache
 	hashQueue chan hashJob
@@ -92,6 +95,7 @@ func New(policy config.Policy, s *sensor.Sensor, options Options) *Agent {
 		sensor:    s,
 		options:   options,
 		procs:     make(map[uint32]*procState),
+		blocked:   make(map[uint32]struct{}),
 		blacklist: bl,
 		hashes:    newHashCache(),
 		hashQueue: make(chan hashJob, 1024),
@@ -136,8 +140,29 @@ func (a *Agent) handle(ev sensor.Event) {
 		return
 	}
 
+	if ev.Type == sensor.EventExec && (a.isBlocked(ev.TGID) || a.isBlocked(ev.PPID)) {
+		a.enforceTGID(ev.TGID, sensor.BlockActionKill, "exec by blocked lineage")
+		return
+	}
+
 	if ok, hash := a.blacklistedEvent(ev); ok {
 		a.enforceBlacklist(ev.TGID, ev.PID, ev.PPID, ev.UID, ev.Comm, ev.Path, hash, "blacklisted exec")
+		return
+	}
+
+	if reason := a.immediateIOC(ev); reason != "" {
+		state := a.state(ev)
+		state.Blocked = true
+		state.Reasons = appendReason(state.Reasons, reason)
+		state.RecentEvents = append(state.RecentEvents, scoredEvent{
+			At:     ev.Timestamp,
+			Type:   ev.TypeName(),
+			Path:   ev.Path,
+			Path2:  ev.Path2,
+			Score:  a.policy.Threshold,
+			Reason: reason,
+		})
+		a.alertAndEnforce(state, reason, sensor.BlockActionKill)
 		return
 	}
 
@@ -174,6 +199,27 @@ func (a *Agent) handle(ev sensor.Event) {
 	}
 }
 
+func (a *Agent) immediateIOC(ev sensor.Event) string {
+	switch ev.Type {
+	case sensor.EventOpen:
+		if !isWriteOpen(ev.Arg0) || !a.inProtectedScope(ev.Path) {
+			return ""
+		}
+		if a.isRansomNote(ev.Path) {
+			return "protected ransom note creation"
+		}
+		if a.hasSuspiciousExtension(ev.Path) {
+			return "protected suspicious extension write"
+		}
+	case sensor.EventRename:
+		if !a.inProtectedScope(ev.Path2) || !a.hasSuspiciousExtension(ev.Path2) {
+			return ""
+		}
+		return "protected rename to suspicious extension"
+	}
+	return ""
+}
+
 func (a *Agent) blacklistedEvent(ev sensor.Event) (bool, string) {
 	if a.blacklist == nil || a.blacklist.empty() || ev.Type != sensor.EventExec || ev.Path == "" {
 		return false, ""
@@ -191,6 +237,36 @@ func (a *Agent) blacklistedEvent(ev sensor.Event) (bool, string) {
 		Reason: "blacklisted exec",
 	})
 	return false, ""
+}
+
+func (a *Agent) isBlocked(tgid uint32) bool {
+	a.blockedMu.RLock()
+	defer a.blockedMu.RUnlock()
+	_, ok := a.blocked[tgid]
+	return ok
+}
+
+func (a *Agent) rememberBlocked(tgid uint32) {
+	a.blockedMu.Lock()
+	a.blocked[tgid] = struct{}{}
+	a.blockedMu.Unlock()
+}
+
+func (a *Agent) enforceTGID(tgid uint32, action uint32, reason string) {
+	if a.options.DryRun {
+		return
+	}
+	if err := a.sensor.BlockTGID(tgid, action, a.policy.BlockTTL); err != nil {
+		log.Printf("failed to block tgid=%d reason=%q: %v", tgid, reason, err)
+		return
+	}
+	a.rememberBlocked(tgid)
+	if action == sensor.BlockActionKill {
+		if proc, err := os.FindProcess(int(tgid)); err == nil {
+			_ = proc.Signal(syscall.SIGKILL)
+		}
+	}
+	log.Printf("enforced action=%s tgid=%d reason=%q ttl=%s", actionName(action), tgid, reason, a.policy.BlockTTL)
 }
 
 func (a *Agent) enqueueHash(job hashJob) {
@@ -301,13 +377,8 @@ func (a *Agent) enforceBlacklist(tgid, pid, ppid, uid uint32, comm, path, hash, 
 	if a.options.DryRun {
 		return
 	}
-	if err := a.sensor.BlockTGID(tgid, sensor.BlockActionKill, a.policy.BlockTTL); err != nil {
-		log.Printf("failed to block blacklisted tgid=%d: %v", tgid, err)
-	}
-	if proc, err := os.FindProcess(int(tgid)); err == nil {
-		_ = proc.Signal(syscall.SIGKILL)
-	}
-	log.Printf("enforced action=kill tgid=%d reason=%q path=%q sha256=%s", tgid, reason, path, hash)
+	a.enforceTGID(tgid, sensor.BlockActionKill, reason)
+	log.Printf("enforced blacklist tgid=%d reason=%q path=%q sha256=%s", tgid, reason, path, hash)
 }
 
 func (a *Agent) state(ev sensor.Event) *procState {
@@ -390,10 +461,18 @@ func (a *Agent) score(ev sensor.Event) (int, string) {
 
 func (a *Agent) block(state *procState) {
 	state.Blocked = true
+	action := sensor.BlockActionDeny
+	if a.policy.Action == "kill" {
+		action = sensor.BlockActionKill
+	}
+	a.alertAndEnforce(state, "behavior threshold", action)
+}
+
+func (a *Agent) alertAndEnforce(state *procState, reason string, action uint32) {
 	al := alert{
 		At:        time.Now(),
 		Policy:    a.policy.Name,
-		Action:    normalizeAction(a.policy.Action),
+		Action:    actionName(action),
 		DryRun:    a.options.DryRun,
 		TGID:      state.TGID,
 		PID:       state.PID,
@@ -411,21 +490,7 @@ func (a *Agent) block(state *procState) {
 	if a.options.DryRun || a.policy.Action == "log" {
 		return
 	}
-
-	action := sensor.BlockActionDeny
-	if a.policy.Action == "kill" {
-		action = sensor.BlockActionKill
-	}
-	if err := a.sensor.BlockTGID(state.TGID, action, a.policy.BlockTTL); err != nil {
-		log.Printf("failed to block tgid=%d: %v", state.TGID, err)
-		return
-	}
-	if action == sensor.BlockActionKill {
-		if proc, err := os.FindProcess(int(state.TGID)); err == nil {
-			_ = proc.Signal(syscall.SIGKILL)
-		}
-	}
-	log.Printf("enforced action=%s tgid=%d ttl=%s", normalizeAction(a.policy.Action), state.TGID, a.policy.BlockTTL)
+	a.enforceTGID(state.TGID, action, reason)
 }
 
 func (a *Agent) inProtectedScope(path string) bool {
@@ -506,6 +571,17 @@ func appendReason(reasons []string, reason string) []string {
 		}
 	}
 	return append(reasons, reason)
+}
+
+func actionName(action uint32) string {
+	switch action {
+	case sensor.BlockActionDeny:
+		return "deny"
+	case sensor.BlockActionKill:
+		return "kill"
+	default:
+		return fmt.Sprintf("unknown(%d)", action)
+	}
 }
 
 func normalizeAction(action string) string {

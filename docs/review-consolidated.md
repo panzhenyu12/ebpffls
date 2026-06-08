@@ -55,7 +55,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 | rename → 可疑后缀 / 赎金信 | 高 | 轨1 |
 | 已知 hash 样本 | 高 | 轨3 |
 | 保护域批量 open 改写 | 中 | 轨2→4 |
-| 零日原地 write 加密 | 低 | 轨2 弱、write 无 kprobe |
+| 零日原地 write 加密 | 中低 | 轨2 仍弱；已标记后 write kprobe 可补杀 |
 | fork 子进程逃逸 | 低 | exec_after_blocked 未实现 |
 | comm 伪装 trusted | 低 | 完全豁免 |
 | mmap / io_uring | 无 | 未观测 |
@@ -65,7 +65,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 ## 5. 已知代码缺口
 
 1. BPF IOC 硬编码，与 yaml 不同步；硬规则无 `protected_dirs` 作用域；且依赖 active BPF LSM
-2. `EventWrite` 不计分；kprobe 无 `__x64_sys_write`
+2. `EventWrite` 不计分；write 已有 kprobe kill 但缺少路径感知评分
 3. kprobe 仅 `bpf_send_signal`，不 `bpf_override_return`
 4. kprobe 符号仅 x86_64
 5. `exec_after_blocked` 未实现
@@ -80,7 +80,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 
 | 阶段 | 目标 | 关键任务 |
 |------|------|----------|
-| **Phase 1** | 闭环修复 | yaml→BPF IOC 同步；write 评分+kprobe；保护域 scoped IOC；exec 传播 |
+| **Phase 1** | 闭环修复 | yaml→BPF IOC 同步；write 评分；保护域 scoped IOC；exec 传播 |
 | **Phase 2** | 特征抽象 | 特征向量、rules DSL、状态机、trust 升级 |
 | **Phase 3** | 调用面扩展 | mmap、copy_file_range、多架构、真 deny |
 | **Phase 4** | 产品化 | 自保护、集成测试、SIEM |

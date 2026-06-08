@@ -17,9 +17,9 @@
 ### 已知缺口
 
 - 文档曾与代码不一致（已在本次更新中对齐）
-- `write` 不计分；kprobe 未挂 `write`
+- `write` 不计分；已标记 TGID 的 write/pwrite64/writev 已有 kprobe kill
 - BPF IOC 与 yaml 不同步；硬规则无 `protected_dirs` 作用域
-- `exec_after_blocked` 未实现
+- blocked lineage exec 已做 kill 传播；`exec_after_blocked` 作为评分规则未实现
 - 仅 x86_64 kprobe；无 `bpf_override_return` 真 deny
 - 无 mmap/io_uring/scan 类观测
 
@@ -33,18 +33,18 @@
 |----|------|------|--------|
 | 1.1 | 统一 IOC 策略源：启动时将 yaml `suspicious_extensions`、`ransom_note_names` 写入 BPF map | 删/减 BPF 硬编码 | P0 |
 | 1.2 | LSM 硬规则增加 `protected_dirs` 前缀 map，IOC 仅在保护域生效 | 降误杀 | P0 |
-| 1.3 | kprobe 增加 `__x64_sys_write`；修复黑名单扫描读 `/proc/pid/status` Tgid | 执法完整 | P0 |
+| 1.3 | kprobe 增加 `__x64_sys_write/pwrite64/writev`；修复黑名单扫描读 `/proc/pid/status` Tgid | 已完成 | P0 |
 | 1.4 | 恢复 `EventWrite` 路径感知评分（fd→path 缓存或 BPF 带 path） | `SO_ENCRYPT_WRITE` | P0 |
-| 1.5 | 高置信语义规则即时 `BlockTGID`：保护域 +（赎金信 \| 可疑后缀 rename） | 不等 threshold | P0 |
-| 1.6 | 实现 `exec_after_blocked`：blocked TGID 再 exec → 新 TGID 入 map | 防 fork 逃逸 | P1 |
+| 1.5 | 高置信语义规则即时 `BlockTGID`：保护域 +（赎金信 \| 可疑后缀 rename） | 已完成 | P0 |
+| 1.6 | 实现 blocked lineage exec 传播：blocked TGID/父 TGID 再 exec → 新 TGID 入 map | 已完成 kill 传播 | P1 |
 | 1.7 | `procState` 定期淘汰；ringbuf 丢事件计数日志 | 稳定性 | P1 |
 
 ### Phase 1 验收标准
 
 - [ ] 修改 yaml 扩展名后，BPF 硬规则同步生效
 - [ ] `/tmp/test.locked` 不写保护域时不被拦；`/home/u/f.locked` 被拦
-- [ ] 标记 TGID 后 `write` 触发 SIGKILL 或 LSM 拒绝
-- [ ] 原地加密模拟（open+write 扇出）能在阈值内告警/阻断
+- [x] 标记 TGID 后 `write` 触发 SIGKILL 或 LSM 拒绝
+- [x] 原地加密模拟（open+write 扇出）能在阈值内告警/阻断
 - [ ] 父进程 blocked 后 exec 子进程，子进程写保护域被拒
 
 ---

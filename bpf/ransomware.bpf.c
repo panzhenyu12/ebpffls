@@ -303,6 +303,24 @@ int kp_override_execve(struct pt_regs *ctx)
 	return kill_blocked_syscall();
 }
 
+SEC("kprobe/__x64_sys_write")
+int kp_override_write(struct pt_regs *ctx)
+{
+	return kill_blocked_syscall();
+}
+
+SEC("kprobe/__x64_sys_pwrite64")
+int kp_override_pwrite64(struct pt_regs *ctx)
+{
+	return kill_blocked_syscall();
+}
+
+SEC("kprobe/__x64_sys_writev")
+int kp_override_writev(struct pt_regs *ctx)
+{
+	return kill_blocked_syscall();
+}
+
 SEC("lsm/file_open")
 int BPF_PROG(enforce_file_open, struct file *file)
 {
@@ -492,6 +510,21 @@ int trace_renameat(struct trace_event_raw_sys_enter *ctx)
 	return 0;
 }
 
+SEC("tracepoint/syscalls/sys_enter_rename")
+int trace_rename(struct trace_event_raw_sys_enter *ctx)
+{
+	struct event *e = new_event(EVENT_RENAME);
+	if (!e)
+		return 0;
+
+	const char *oldname = (const char *)ctx->args[0];
+	const char *newname = (const char *)ctx->args[1];
+	bpf_probe_read_user_str(e->path, sizeof(e->path), oldname);
+	bpf_probe_read_user_str(e->path2, sizeof(e->path2), newname);
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
 SEC("tracepoint/syscalls/sys_enter_renameat2")
 int trace_renameat2(struct trace_event_raw_sys_enter *ctx)
 {
@@ -504,6 +537,19 @@ int trace_renameat2(struct trace_event_raw_sys_enter *ctx)
 	e->arg0 = (int)ctx->args[4];
 	bpf_probe_read_user_str(e->path, sizeof(e->path), oldname);
 	bpf_probe_read_user_str(e->path2, sizeof(e->path2), newname);
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_unlink")
+int trace_unlink(struct trace_event_raw_sys_enter *ctx)
+{
+	struct event *e = new_event(EVENT_UNLINK);
+	if (!e)
+		return 0;
+
+	const char *pathname = (const char *)ctx->args[0];
+	bpf_probe_read_user_str(e->path, sizeof(e->path), pathname);
 	bpf_ringbuf_submit(e, 0);
 	return 0;
 }

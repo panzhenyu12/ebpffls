@@ -46,8 +46,10 @@ func New() (*Sensor, error) {
 		{"syscalls", "sys_enter_execve", objs.TraceExecve},
 		{"syscalls", "sys_enter_openat", objs.TraceOpenat},
 		{"syscalls", "sys_enter_write", objs.TraceWrite},
+		{"syscalls", "sys_enter_rename", objs.TraceRename},
 		{"syscalls", "sys_enter_renameat", objs.TraceRenameat},
 		{"syscalls", "sys_enter_renameat2", objs.TraceRenameat2},
+		{"syscalls", "sys_enter_unlink", objs.TraceUnlink},
 		{"syscalls", "sys_enter_unlinkat", objs.TraceUnlinkat},
 		{"syscalls", "sys_enter_truncate", objs.TraceTruncate},
 		{"syscalls", "sys_enter_ftruncate", objs.TraceFtruncate},
@@ -95,6 +97,9 @@ func New() (*Sensor, error) {
 		{"__x64_sys_truncate", objs.KpOverrideTruncate},
 		{"__x64_sys_ftruncate", objs.KpOverrideFtruncate},
 		{"__x64_sys_execve", objs.KpOverrideExecve},
+		{"__x64_sys_write", objs.KpOverrideWrite},
+		{"__x64_sys_pwrite64", objs.KpOverridePwrite64},
+		{"__x64_sys_writev", objs.KpOverrideWritev},
 	}
 	for _, kp := range kprobes {
 		l, err := link.Kprobe(kp.symbol, kp.prog, nil)
