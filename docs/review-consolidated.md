@@ -68,9 +68,8 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 2. `EventWrite` 不计分；write 已有 kprobe kill 但缺少路径感知评分
 3. kprobe 仅 `bpf_send_signal`，不 `bpf_override_return`
 4. kprobe 符号仅 x86_64
-5. `exec_after_blocked` 未实现
-6. 黑名单 `/proc` 扫描可能用 PID 而非 TGID
-7. Agent 无自保护
+5. `exec_after_blocked` 作为评分规则未实现；kill 传播已实现
+6. Agent 无自保护
 
 ---
 
@@ -83,7 +82,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 | **Phase 1** | 闭环修复 | yaml→BPF IOC 同步；write 评分；保护域 scoped IOC；exec 传播 |
 | **Phase 2** | 特征抽象 | 特征向量、rules DSL、状态机、trust 升级 |
 | **Phase 3** | 调用面扩展 | mmap、copy_file_range、多架构、真 deny |
-| **Phase 4** | 产品化 | 自保护、集成测试、SIEM |
+| **Phase 4** | 产品化 | 自保护、扩展集成测试、SIEM |
 
 **建议里程碑：** v0.2 = Phase 1 完成。
 

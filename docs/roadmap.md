@@ -46,6 +46,7 @@
 - [x] 标记 TGID 后 `write` 触发 SIGKILL 或 LSM 拒绝
 - [x] 原地加密模拟（open+write 扇出）能在阈值内告警/阻断
 - [ ] 父进程 blocked 后 exec 子进程，子进程写保护域被拒
+- [x] 集成测试覆盖 dry-run、行为阈值、即时 IOC、unlink/truncate、hash 黑名单、热更新扫描、blocked lineage exec
 
 ---
 

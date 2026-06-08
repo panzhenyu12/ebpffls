@@ -1,0 +1,391 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN="${ROOT_DIR}/bin/ebpffls"
+TMP_DIR="$(mktemp -d /tmp/ebpffls-it.XXXXXX)"
+AGENT_PID=""
+BADLOOP=""
+
+if [[ "${EUID}" -ne 0 ]]; then
+  echo "integration tests must run as root" >&2
+  exit 1
+fi
+
+cleanup() {
+  if [[ -n "${AGENT_PID}" ]]; then
+    kill "${AGENT_PID}" 2>/dev/null || true
+    wait "${AGENT_PID}" 2>/dev/null || true
+  fi
+  if [[ -n "${BADLOOP}" ]]; then
+    pkill -f "${BADLOOP}" 2>/dev/null || true
+  fi
+  rm -rf "${TMP_DIR}"
+}
+trap cleanup EXIT
+
+log() {
+  printf '[integration] %s\n' "$*"
+}
+
+fail() {
+  echo "[integration] FAIL: $*" >&2
+  exit 1
+}
+
+stop_agent() {
+  if [[ -n "${AGENT_PID}" ]]; then
+    kill "${AGENT_PID}" 2>/dev/null || true
+    wait "${AGENT_PID}" 2>/dev/null || true
+    AGENT_PID=""
+  fi
+}
+
+write_policy() {
+  local path="$1"
+  local name="$2"
+  local threshold="$3"
+  local action="$4"
+  local protected_dir="$5"
+  local blacklist_file="$6"
+  local scan="${7:-30s}"
+
+  cat >"${path}" <<YAML
+name: ${name}
+window: 10s
+threshold: ${threshold}
+action: ${action}
+block_ttl: 1m
+protected_dirs:
+  - ${protected_dir}
+backup_dirs:
+  - ${protected_dir}/backup
+trusted_processes:
+  - ebpffls
+blacklist_scan: ${scan}
+blacklist_hashes: []
+blacklist_hash_files:
+  - ${blacklist_file}
+suspicious_extensions:
+  - .locked
+  - .encrypted
+  - .crypt
+  - .crypto
+  - .enc
+ransom_note_names:
+  - README_FOR_DECRYPT.txt
+  - README_TO_DECRYPT.txt
+  - DECRYPT_INSTRUCTIONS.txt
+  - RECOVER_FILES.txt
+  - RECOVER_FILES.html
+  - HOW_TO_DECRYPT.txt
+scores:
+  write: 1
+  truncate: 6
+  rename: 8
+  unlink: 8
+  suspicious_extension: 10
+  ransom_note: 20
+  backup_destroy: 20
+  high_rate_bonus: 15
+  exec_after_blocked: 10
+YAML
+}
+
+start_agent() {
+  local policy="$1"
+  local logfile="$2"
+  local mode="${3:-enforce}"
+
+  stop_agent
+  if [[ "${mode}" == "dry-run" ]]; then
+    "${BIN}" monitor --config "${policy}" >"${logfile}" 2>&1 &
+  else
+    "${BIN}" monitor --config "${policy}" --dry-run=false >"${logfile}" 2>&1 &
+  fi
+  AGENT_PID="$!"
+  sleep 1
+  kill -0 "${AGENT_PID}" 2>/dev/null || {
+    cat "${logfile}" >&2 || true
+    fail "agent failed to start"
+  }
+}
+
+expect_killed() {
+  local name="$1"
+  shift
+  set +e
+  timeout 8s "$@"
+  local rc=$?
+  set -e
+  if [[ "${rc}" -ne 137 ]]; then
+    fail "${name}: expected SIGKILL exit 137, got ${rc}"
+  fi
+}
+
+expect_survives() {
+  local name="$1"
+  shift
+  set +e
+  timeout 8s "$@"
+  local rc=$?
+  set -e
+  if [[ "${rc}" -ne 0 ]]; then
+    fail "${name}: expected success exit 0, got ${rc}"
+  fi
+}
+
+write_py() {
+  local path="$1"
+  shift
+  cat >"${path}" <<'PY'
+PY
+  cat >>"${path}"
+}
+
+build_badloop() {
+  local src="${TMP_DIR}/badloop.c"
+  BADLOOP="${TMP_DIR}/badloop"
+  cat >"${src}" <<'C'
+#include <signal.h>
+#include <unistd.h>
+int main(void) {
+  signal(SIGTERM, SIG_IGN);
+  for (;;) {
+    sleep(1);
+  }
+}
+C
+  cc "${src}" -o "${BADLOOP}"
+}
+
+test_dry_run_survives() {
+  log "dry-run alerts but does not kill"
+  local dir="${TMP_DIR}/dry"
+  local bl="${TMP_DIR}/dry-blacklist.txt"
+  local policy="${TMP_DIR}/dry.yaml"
+  local agent_log="${TMP_DIR}/dry-agent.log"
+  local sim="${TMP_DIR}/dry.py"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" dry-run-test 3 kill "${dir}" "${bl}"
+  start_agent "${policy}" "${agent_log}" dry-run
+  cat >"${sim}" <<PY
+import os
+base = "${dir}"
+for i in range(6):
+    with open(f"{base}/f{i}.txt", "w") as f:
+        f.write("data")
+print("survived")
+PY
+  expect_survives "dry-run" python3 "${sim}"
+  grep -q '"dry_run":true' "${agent_log}" || fail "dry-run: expected alert with dry_run=true"
+  stop_agent
+}
+
+test_behavior_threshold_kills() {
+  log "behavior threshold kills bulk protected writes"
+  local dir="${TMP_DIR}/behavior"
+  local bl="${TMP_DIR}/behavior-blacklist.txt"
+  local policy="${TMP_DIR}/behavior.yaml"
+  local agent_log="${TMP_DIR}/behavior-agent.log"
+  local sim="${TMP_DIR}/behavior.py"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" behavior-test 5 kill "${dir}" "${bl}"
+  start_agent "${policy}" "${agent_log}"
+  cat >"${sim}" <<PY
+import time
+base = "${dir}"
+for i in range(100):
+    with open(f"{base}/bulk{i}.txt", "w") as f:
+        f.write("data")
+    time.sleep(0.02)
+print("survived")
+PY
+  expect_killed "behavior threshold" python3 "${sim}"
+  grep -q 'behavior threshold' "${agent_log}" || fail "behavior threshold: expected enforcement log"
+  stop_agent
+}
+
+test_immediate_rename_ioc_kills() {
+  log "protected suspicious rename kills immediately"
+  local dir="${TMP_DIR}/rename-ioc"
+  local bl="${TMP_DIR}/rename-blacklist.txt"
+  local policy="${TMP_DIR}/rename.yaml"
+  local agent_log="${TMP_DIR}/rename-agent.log"
+  local sim="${TMP_DIR}/rename.py"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" rename-ioc-test 45 kill "${dir}" "${bl}"
+  start_agent "${policy}" "${agent_log}"
+  cat >"${sim}" <<PY
+import os, time
+p = "${dir}/doc.txt"
+with open(p, "w") as f:
+    f.write("data")
+os.rename(p, p + ".locked")
+time.sleep(5)
+print("survived")
+PY
+  expect_killed "rename IOC" python3 "${sim}"
+  grep -q 'protected rename to suspicious extension' "${agent_log}" || fail "rename IOC: expected IOC reason"
+  stop_agent
+}
+
+test_ransom_note_kills() {
+  log "protected ransom note creation kills immediately"
+  local dir="${TMP_DIR}/note-ioc"
+  local bl="${TMP_DIR}/note-blacklist.txt"
+  local policy="${TMP_DIR}/note.yaml"
+  local agent_log="${TMP_DIR}/note-agent.log"
+  local sim="${TMP_DIR}/note.py"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" note-ioc-test 45 kill "${dir}" "${bl}"
+  start_agent "${policy}" "${agent_log}"
+  cat >"${sim}" <<PY
+import time
+with open("${dir}/README_FOR_DECRYPT.txt", "w") as f:
+    f.write("pay")
+time.sleep(5)
+print("survived")
+PY
+  expect_killed "ransom note IOC" python3 "${sim}"
+  grep -q 'protected ransom note creation' "${agent_log}" || fail "ransom note IOC: expected IOC reason"
+  stop_agent
+}
+
+test_unlink_and_truncate_kill() {
+  log "legacy unlink and truncate events score and kill"
+  local dir="${TMP_DIR}/destructive"
+  local bl="${TMP_DIR}/destructive-blacklist.txt"
+  local policy="${TMP_DIR}/destructive.yaml"
+  local agent_log="${TMP_DIR}/destructive-agent.log"
+  local unlink_sim="${TMP_DIR}/unlink.py"
+  local trunc_sim="${TMP_DIR}/truncate.py"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" destructive-test 6 kill "${dir}" "${bl}"
+
+  start_agent "${policy}" "${agent_log}"
+  cat >"${unlink_sim}" <<PY
+import os, time
+p = "${dir}/delete-me.txt"
+with open(p, "w") as f:
+    f.write("data")
+os.unlink(p)
+time.sleep(5)
+print("survived")
+PY
+  expect_killed "unlink scoring" python3 "${unlink_sim}"
+  stop_agent
+
+  start_agent "${policy}" "${agent_log}"
+  cat >"${trunc_sim}" <<PY
+import os, time
+p = "${dir}/truncate-me.txt"
+with open(p, "w") as f:
+    f.write("data")
+os.truncate(p, 0)
+time.sleep(5)
+print("survived")
+PY
+  expect_killed "truncate scoring" python3 "${trunc_sim}"
+  stop_agent
+}
+
+test_hash_blacklist_exec_kills() {
+  log "hash blacklist kills blacklisted exec"
+  local dir="${TMP_DIR}/hash-exec"
+  local bl="${TMP_DIR}/hash-exec-blacklist.txt"
+  local policy="${TMP_DIR}/hash-exec.yaml"
+  local agent_log="${TMP_DIR}/hash-exec-agent.log"
+  mkdir -p "${dir}"
+  sha256sum "${BADLOOP}" | cut -d' ' -f1 >"${bl}"
+  write_policy "${policy}" hash-exec-test 45 kill "${dir}" "${bl}" 30s
+  start_agent "${policy}" "${agent_log}"
+  expect_killed "hash exec" "${BADLOOP}"
+  grep -q 'blacklisted exec' "${agent_log}" || fail "hash exec: expected blacklist alert"
+  stop_agent
+}
+
+test_hash_blacklist_hot_scan_kills() {
+  log "hash blacklist hot reload kills already running process"
+  local dir="${TMP_DIR}/hash-scan"
+  local bl="${TMP_DIR}/hash-scan-blacklist.txt"
+  local policy="${TMP_DIR}/hash-scan.yaml"
+  local agent_log="${TMP_DIR}/hash-scan-agent.log"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" hash-scan-test 45 kill "${dir}" "${bl}" 1s
+  start_agent "${policy}" "${agent_log}"
+  "${BADLOOP}" &
+  local pid="$!"
+  sleep 1
+  sha256sum "${BADLOOP}" | cut -d' ' -f1 >"${bl}"
+  for _ in $(seq 1 8); do
+    if ! kill -0 "${pid}" 2>/dev/null; then
+      wait "${pid}" 2>/dev/null || true
+      grep -q 'blacklisted running process' "${agent_log}" || fail "hash scan: expected running-process alert"
+      stop_agent
+      return
+    fi
+    sleep 1
+  done
+  kill "${pid}" 2>/dev/null || true
+  fail "hash scan: process survived hot blacklist"
+}
+
+test_blocked_lineage_exec_kills_child() {
+  log "blocked lineage exec kills child process"
+  local dir="${TMP_DIR}/lineage"
+  local bl="${TMP_DIR}/lineage-blacklist.txt"
+  local policy="${TMP_DIR}/lineage.yaml"
+  local agent_log="${TMP_DIR}/lineage-agent.log"
+  local sim="${TMP_DIR}/lineage.py"
+  local status_file="${TMP_DIR}/lineage.status"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" lineage-test 1 deny "${dir}" "${bl}" 30s
+  start_agent "${policy}" "${agent_log}"
+  cat >"${sim}" <<PY
+import os, time
+with open("${dir}/mark-parent.txt", "w") as f:
+    f.write("data")
+time.sleep(1.0)
+pid = os.fork()
+if pid == 0:
+    os.execv("${BADLOOP}", ["${BADLOOP}"])
+_, status = os.waitpid(pid, 0)
+with open("${status_file}", "w") as f:
+    f.write(str(status))
+PY
+  expect_survives "lineage parent" python3 "${sim}"
+  local status
+  status="$(cat "${status_file}")"
+  python3 - <<PY
+import os, sys
+status = int("${status}")
+sys.exit(0 if os.WIFSIGNALED(status) and os.WTERMSIG(status) == 9 else 1)
+PY
+  grep -q 'exec by blocked lineage' "${agent_log}" || fail "lineage: expected exec propagation log"
+  stop_agent
+}
+
+main() {
+  command -v cc >/dev/null || fail "cc is required for integration tests"
+  [[ -x "${BIN}" ]] || fail "missing binary ${BIN}; run make build first"
+  build_badloop
+  test_dry_run_survives
+  test_behavior_threshold_kills
+  test_immediate_rename_ioc_kills
+  test_ransom_note_kills
+  test_unlink_and_truncate_kill
+  test_hash_blacklist_exec_kills
+  test_hash_blacklist_hot_scan_kills
+  test_blocked_lineage_exec_kills_child
+  log "all integration tests passed"
+}
+
+main "$@"

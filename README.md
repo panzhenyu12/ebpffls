@@ -46,6 +46,12 @@ will not be active.
 make build
 ```
 
+Run Linux/root integration tests:
+
+```bash
+sudo make integration-test
+```
+
 ## Run
 
 Observation only (default — dry-run prevents kernel enforcement):
