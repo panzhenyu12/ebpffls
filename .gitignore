@@ -1,0 +1,5 @@
+bin/
+bpf/vmlinux.h
+internal/sensor/*_bpfel.go
+internal/sensor/*_bpfeb.go
+internal/sensor/*.o

@@ -1,0 +1,537 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/panzhenyu/ebpffls/internal/config"
+	"github.com/panzhenyu/ebpffls/internal/sensor"
+)
+
+type Options struct {
+	DryRun      bool
+	DebugEvents bool
+}
+
+type Agent struct {
+	policy    config.Policy
+	sensor    *sensor.Sensor
+	options   Options
+	procs     map[uint32]*procState
+	blacklist *blacklist
+	hashes    *hashCache
+	hashQueue chan hashJob
+}
+
+type hashJob struct {
+	TGID   uint32
+	PID    uint32
+	PPID   uint32
+	UID    uint32
+	Comm   string
+	Path   string
+	Reason string
+}
+
+type procState struct {
+	TGID           uint32
+	PID            uint32
+	PPID           uint32
+	UID            uint32
+	Comm           string
+	Score          int
+	FirstSeen      time.Time
+	LastSeen       time.Time
+	EventCount     int
+	WriteCount     int
+	Blocked        bool
+	Reasons        []string
+	RecentEvents   []scoredEvent
+	HighRateScored bool
+}
+
+type scoredEvent struct {
+	At     time.Time `json:"at"`
+	Type   string    `json:"type"`
+	Path   string    `json:"path,omitempty"`
+	Path2  string    `json:"path2,omitempty"`
+	Score  int       `json:"score"`
+	Reason string    `json:"reason"`
+}
+
+type alert struct {
+	At        time.Time     `json:"at"`
+	Policy    string        `json:"policy"`
+	Action    string        `json:"action"`
+	DryRun    bool          `json:"dry_run"`
+	TGID      uint32        `json:"tgid"`
+	PID       uint32        `json:"pid"`
+	PPID      uint32        `json:"ppid"`
+	UID       uint32        `json:"uid"`
+	Comm      string        `json:"comm"`
+	Score     int           `json:"score"`
+	Threshold int           `json:"threshold"`
+	Reasons   []string      `json:"reasons"`
+	Events    []scoredEvent `json:"events"`
+}
+
+func New(policy config.Policy, s *sensor.Sensor, options Options) *Agent {
+	bl, err := newBlacklist(policy)
+	if err != nil {
+		log.Printf("failed to load blacklist: %v", err)
+	}
+	return &Agent{
+		policy:    policy,
+		sensor:    s,
+		options:   options,
+		procs:     make(map[uint32]*procState),
+		blacklist: bl,
+		hashes:    newHashCache(),
+		hashQueue: make(chan hashJob, 1024),
+	}
+}
+
+func (a *Agent) Run(ctx context.Context) error {
+	events, errs := a.sensor.Events(ctx)
+	if a.blacklist != nil {
+		go a.hashWorker(ctx)
+		go a.scanBlacklist(ctx)
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case err, ok := <-errs:
+			if ok && err != nil {
+				return err
+			}
+		case ev, ok := <-events:
+			if !ok {
+				return nil
+			}
+			a.handle(ev)
+		}
+	}
+}
+
+func (a *Agent) handle(ev sensor.Event) {
+	if a.isTrusted(ev.Comm) {
+		return
+	}
+
+	if a.options.DebugEvents {
+		log.Printf("event type=%s pid=%d tgid=%d ppid=%d uid=%d comm=%q arg0=%d size=%d path=%q path2=%q",
+			ev.TypeName(), ev.PID, ev.TGID, ev.PPID, ev.UID, ev.Comm, ev.Arg0, ev.Size, ev.Path, ev.Path2)
+	}
+
+	if ev.Type == sensor.EventBlock {
+		log.Printf("blocked op=%s pid=%d tgid=%d comm=%s", eventName(uint32(ev.Arg0)), ev.PID, ev.TGID, ev.Comm)
+		return
+	}
+
+	if ok, hash := a.blacklistedEvent(ev); ok {
+		a.enforceBlacklist(ev.TGID, ev.PID, ev.PPID, ev.UID, ev.Comm, ev.Path, hash, "blacklisted exec")
+		return
+	}
+
+	score, reason := a.score(ev)
+	if score == 0 {
+		return
+	}
+
+	state := a.state(ev)
+	a.prune(state, ev.Timestamp)
+	state.Score += score
+	state.EventCount++
+	if ev.Type == sensor.EventWrite || ev.Type == sensor.EventOpen {
+		state.WriteCount++
+	}
+	state.RecentEvents = append(state.RecentEvents, scoredEvent{
+		At:     ev.Timestamp,
+		Type:   ev.TypeName(),
+		Path:   ev.Path,
+		Path2:  ev.Path2,
+		Score:  score,
+		Reason: reason,
+	})
+	state.Reasons = appendReason(state.Reasons, reason)
+
+	if !state.HighRateScored && state.WriteCount >= 64 {
+		state.Score += a.policy.Scores.HighRateBonus
+		state.HighRateScored = true
+		state.Reasons = appendReason(state.Reasons, "high-rate file mutation")
+	}
+
+	if state.Score >= a.policy.Threshold && !state.Blocked {
+		a.block(state)
+	}
+}
+
+func (a *Agent) blacklistedEvent(ev sensor.Event) (bool, string) {
+	if a.blacklist == nil || a.blacklist.empty() || ev.Type != sensor.EventExec || ev.Path == "" {
+		return false, ""
+	}
+	if hash, ok := a.hashes.get(ev.Path); ok {
+		return a.blacklist.matchHash(hash), hash
+	}
+	a.enqueueHash(hashJob{
+		TGID:   ev.TGID,
+		PID:    ev.PID,
+		PPID:   ev.PPID,
+		UID:    ev.UID,
+		Comm:   ev.Comm,
+		Path:   ev.Path,
+		Reason: "blacklisted exec",
+	})
+	return false, ""
+}
+
+func (a *Agent) enqueueHash(job hashJob) {
+	select {
+	case a.hashQueue <- job:
+	default:
+		log.Printf("hash queue full; dropping path=%q pid=%d", job.Path, job.PID)
+	}
+}
+
+func (a *Agent) hashWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case job := <-a.hashQueue:
+			hash, err := a.hashes.compute(job.Path)
+			if err != nil {
+				if a.options.DebugEvents {
+					log.Printf("hash compute failed path=%q: %v", job.Path, err)
+				}
+				continue
+			}
+			if a.blacklist.matchHash(hash) {
+				a.enforceBlacklist(job.TGID, job.PID, job.PPID, job.UID, job.Comm, job.Path, hash, job.Reason)
+			}
+		}
+	}
+}
+
+func (a *Agent) procHash(path string) (string, bool) {
+	if path == "" {
+		return "", false
+	}
+	hash, err := a.hashes.compute(path)
+	if err != nil {
+		if a.options.DebugEvents {
+			log.Printf("hash proc exe failed path=%q: %v", path, err)
+		}
+		return "", false
+	}
+	return hash, true
+}
+
+func (a *Agent) scanBlacklist(ctx context.Context) {
+	interval := a.policy.BlacklistScan
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	a.scanBlacklistOnce()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.scanBlacklistOnce()
+		}
+	}
+}
+
+func (a *Agent) scanBlacklistOnce() {
+	if err := a.blacklist.reloadFiles(); err != nil {
+		log.Printf("failed to reload blacklist hash files: %v", err)
+	}
+	procs, err := listProcs()
+	if err != nil {
+		log.Printf("failed to scan /proc for blacklist: %v", err)
+		return
+	}
+	for _, proc := range procs {
+		if a.isTrusted(proc.Comm) {
+			continue
+		}
+		hash, ok := a.procHash(proc.Exe)
+		if ok && a.blacklist.matchHash(hash) {
+			a.enforceBlacklist(proc.PID, proc.PID, 0, 0, proc.Comm, proc.Exe, hash, "blacklisted running process")
+		}
+	}
+}
+
+func (a *Agent) enforceBlacklist(tgid, pid, ppid, uid uint32, comm, path, hash, reason string) {
+	al := alert{
+		At:        time.Now(),
+		Policy:    a.policy.Name,
+		Action:    "kill",
+		DryRun:    a.options.DryRun,
+		TGID:      tgid,
+		PID:       pid,
+		PPID:      ppid,
+		UID:       uid,
+		Comm:      comm,
+		Score:     a.policy.Threshold,
+		Threshold: a.policy.Threshold,
+		Reasons:   []string{reason},
+		Events: []scoredEvent{{
+			At:     time.Now(),
+			Type:   "blacklist",
+			Path:   path,
+			Path2:  hash,
+			Score:  a.policy.Threshold,
+			Reason: reason,
+		}},
+	}
+	data, _ := json.Marshal(al)
+	log.Printf("alert=%s", data)
+	if a.options.DryRun {
+		return
+	}
+	if err := a.sensor.BlockTGID(tgid, sensor.BlockActionKill, a.policy.BlockTTL); err != nil {
+		log.Printf("failed to block blacklisted tgid=%d: %v", tgid, err)
+	}
+	if proc, err := os.FindProcess(int(tgid)); err == nil {
+		_ = proc.Signal(syscall.SIGKILL)
+	}
+	log.Printf("enforced action=kill tgid=%d reason=%q path=%q sha256=%s", tgid, reason, path, hash)
+}
+
+func (a *Agent) state(ev sensor.Event) *procState {
+	state := a.procs[ev.TGID]
+	if state == nil {
+		state = &procState{
+			TGID:      ev.TGID,
+			FirstSeen: ev.Timestamp,
+		}
+		a.procs[ev.TGID] = state
+	}
+	state.PID = ev.PID
+	state.PPID = ev.PPID
+	state.UID = ev.UID
+	state.Comm = ev.Comm
+	state.LastSeen = ev.Timestamp
+	return state
+}
+
+func (a *Agent) prune(state *procState, now time.Time) {
+	if state.FirstSeen.IsZero() || now.Sub(state.FirstSeen) <= a.policy.Window {
+		return
+	}
+	state.Score = 0
+	state.EventCount = 0
+	state.WriteCount = 0
+	state.Reasons = nil
+	state.RecentEvents = nil
+	state.HighRateScored = false
+	state.FirstSeen = now
+}
+
+func (a *Agent) score(ev sensor.Event) (int, string) {
+	path := pickPath(ev)
+	protected := a.inProtectedScope(path)
+	backup := a.inBackupScope(path)
+
+	switch ev.Type {
+	case sensor.EventExec:
+		return 0, ""
+	case sensor.EventOpen:
+		if !protected && !backup {
+			return 0, ""
+		}
+		if isWriteOpen(ev.Arg0) {
+			if a.isRansomNote(path) {
+				return a.policy.Scores.RansomNote, "ransom note creation"
+			}
+			if a.hasSuspiciousExtension(path) {
+				return a.policy.Scores.SuspiciousExtension, "suspicious extension write"
+			}
+			return a.policy.Scores.Write, "write-open in protected scope"
+		}
+	case sensor.EventWrite:
+		return 0, ""
+	case sensor.EventRename:
+		if a.inProtectedScope(ev.Path) || a.inProtectedScope(ev.Path2) || a.inBackupScope(ev.Path) || a.inBackupScope(ev.Path2) {
+			if a.hasSuspiciousExtension(ev.Path2) {
+				return a.policy.Scores.Rename + a.policy.Scores.SuspiciousExtension, "rename to suspicious extension"
+			}
+			return a.policy.Scores.Rename, "rename in protected scope"
+		}
+	case sensor.EventUnlink:
+		if backup {
+			return a.policy.Scores.Unlink + a.policy.Scores.BackupDestroy, "backup deletion"
+		}
+		if protected {
+			return a.policy.Scores.Unlink, "unlink in protected scope"
+		}
+	case sensor.EventTruncate:
+		if backup {
+			return a.policy.Scores.Truncate + a.policy.Scores.BackupDestroy, "backup truncation"
+		}
+		if protected {
+			return a.policy.Scores.Truncate, "truncate in protected scope"
+		}
+	}
+	return 0, ""
+}
+
+func (a *Agent) block(state *procState) {
+	state.Blocked = true
+	al := alert{
+		At:        time.Now(),
+		Policy:    a.policy.Name,
+		Action:    normalizeAction(a.policy.Action),
+		DryRun:    a.options.DryRun,
+		TGID:      state.TGID,
+		PID:       state.PID,
+		PPID:      state.PPID,
+		UID:       state.UID,
+		Comm:      state.Comm,
+		Score:     state.Score,
+		Threshold: a.policy.Threshold,
+		Reasons:   state.Reasons,
+		Events:    state.RecentEvents,
+	}
+	data, _ := json.Marshal(al)
+	log.Printf("alert=%s", data)
+
+	if a.options.DryRun || a.policy.Action == "log" {
+		return
+	}
+
+	action := sensor.BlockActionDeny
+	if a.policy.Action == "kill" {
+		action = sensor.BlockActionKill
+	}
+	if err := a.sensor.BlockTGID(state.TGID, action, a.policy.BlockTTL); err != nil {
+		log.Printf("failed to block tgid=%d: %v", state.TGID, err)
+		return
+	}
+	if action == sensor.BlockActionKill {
+		if proc, err := os.FindProcess(int(state.TGID)); err == nil {
+			_ = proc.Signal(syscall.SIGKILL)
+		}
+	}
+	log.Printf("enforced action=%s tgid=%d ttl=%s", normalizeAction(a.policy.Action), state.TGID, a.policy.BlockTTL)
+}
+
+func (a *Agent) inProtectedScope(path string) bool {
+	return hasDirPrefix(path, a.policy.ProtectedDirs)
+}
+
+func (a *Agent) inBackupScope(path string) bool {
+	return hasDirPrefix(path, a.policy.BackupDirs)
+}
+
+func (a *Agent) isTrusted(comm string) bool {
+	for _, trusted := range a.policy.TrustedProcesses {
+		if comm == trusted {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Agent) hasSuspiciousExtension(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	for _, candidate := range a.policy.SuspiciousExtensions {
+		if ext == strings.ToLower(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Agent) isRansomNote(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	for _, candidate := range a.policy.RansomNoteNames {
+		if base == strings.ToLower(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDirPrefix(path string, dirs []string) bool {
+	if path == "" {
+		return false
+	}
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		cleanDir := filepath.Clean(dir)
+		cleanPath := filepath.Clean(path)
+		if cleanPath == cleanDir || strings.HasPrefix(cleanPath, cleanDir+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func pickPath(ev sensor.Event) string {
+	if ev.Path2 != "" {
+		return ev.Path2
+	}
+	return ev.Path
+}
+
+func isWriteOpen(flags int32) bool {
+	const (
+		oAccMode = 00000003
+		oWronly  = 00000001
+		oRdwr    = 00000002
+		oTrunc   = 00001000
+	)
+	return flags&oTrunc != 0 || flags&oAccMode == oWronly || flags&oAccMode == oRdwr
+}
+
+func appendReason(reasons []string, reason string) []string {
+	for _, existing := range reasons {
+		if existing == reason {
+			return reasons
+		}
+	}
+	return append(reasons, reason)
+}
+
+func normalizeAction(action string) string {
+	switch action {
+	case "deny", "kill", "log":
+		return action
+	default:
+		return fmt.Sprintf("unknown(%s)", action)
+	}
+}
+
+func eventName(t uint32) string {
+	switch t {
+	case sensor.EventExec:
+		return "exec"
+	case sensor.EventOpen:
+		return "open"
+	case sensor.EventWrite:
+		return "write"
+	case sensor.EventRename:
+		return "rename"
+	case sensor.EventUnlink:
+		return "unlink"
+	case sensor.EventTruncate:
+		return "truncate"
+	default:
+		return fmt.Sprintf("unknown(%d)", t)
+	}
+}

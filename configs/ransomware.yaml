@@ -1,0 +1,61 @@
+name: ransomware-default
+description: Conservative ransomware behavior policy inspired by Tetragon tracing policies.
+window: 10s
+threshold: 45
+action: kill
+block_ttl: 10m
+protected_dirs:
+  - /home
+  - /root
+  - /srv
+  - /var/www
+  - /mnt
+  - /media
+backup_dirs:
+  - /backup
+  - /backups
+  - /.snapshot
+  - /var/backups
+trusted_processes:
+  - ebpffls
+  - apt
+  - apt-get
+  - dpkg
+  - snapd
+  - systemd
+  - journald
+  - rsync
+  - tar
+  - gzip
+  - bzip2
+  - xz
+  - backup
+blacklist_scan: 5s
+blacklist_hashes: []
+blacklist_hash_files:
+  - configs/blacklist.txt
+suspicious_extensions:
+  - .locked
+  - .encrypted
+  - .crypt
+  - .crypto
+  - .enc
+  - .pay
+  - .ransom
+ransom_note_names:
+  - README_FOR_DECRYPT.txt
+  - README_TO_DECRYPT.txt
+  - DECRYPT_INSTRUCTIONS.txt
+  - RECOVER_FILES.txt
+  - RECOVER_FILES.html
+  - HOW_TO_DECRYPT.txt
+scores:
+  write: 1
+  truncate: 6
+  rename: 8
+  unlink: 8
+  suspicious_extension: 10
+  ransom_note: 20
+  backup_destroy: 20
+  high_rate_bonus: 15
+  exec_after_blocked: 10
