@@ -12,6 +12,8 @@ char LICENSE[] SEC("license") = "Dual MIT/GPL";
 #define O_WRONLY 00000001
 #define O_RDWR 00000002
 #define O_TRUNC 00001000
+#define F_DUPFD 0
+#define F_DUPFD_CLOEXEC 1030
 #define SIGKILL 9
 #define NAME_MAX_LEN 128
 
@@ -32,12 +34,24 @@ struct pending_open {
 	char path[PATH_MAX_LEN];
 };
 
+struct pending_dup {
+	__s32 oldfd;
+	__s32 newfd;
+};
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 16384);
 	__type(key, __u64);
 	__type(value, struct pending_open);
 } pending_opens SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 16384);
+	__type(key, __u64);
+	__type(value, struct pending_dup);
+} pending_dups SEC(".maps");
 
 static __always_inline __u32 current_ppid(void)
 {
@@ -587,6 +601,154 @@ int trace_writev(struct trace_event_raw_sys_enter *ctx)
 	e->arg0 = (int)ctx->args[0];
 	e->size = (__u64)ctx->args[2];
 	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_close")
+int trace_close(struct trace_event_raw_sys_enter *ctx)
+{
+	struct event *e = new_event(EVENT_CLOSE);
+	if (!e)
+		return 0;
+
+	e->arg0 = (int)ctx->args[0];
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_dup")
+int trace_dup(struct trace_event_raw_sys_enter *ctx)
+{
+	struct pending_dup pending = {};
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+
+	pending.oldfd = (int)ctx->args[0];
+	pending.newfd = -1;
+	bpf_map_update_elem(&pending_dups, &pid_tgid, &pending, BPF_ANY);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_dup")
+int trace_dup_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	struct pending_dup *pending = bpf_map_lookup_elem(&pending_dups, &pid_tgid);
+	if (!pending)
+		return 0;
+
+	int newfd = (int)ctx->ret;
+	if (newfd >= 0) {
+		struct event *e = new_event(EVENT_DUP);
+		if (e) {
+			e->arg0 = pending->oldfd;
+			e->arg1 = newfd;
+			bpf_ringbuf_submit(e, 0);
+		}
+	}
+	bpf_map_delete_elem(&pending_dups, &pid_tgid);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_dup2")
+int trace_dup2(struct trace_event_raw_sys_enter *ctx)
+{
+	struct pending_dup pending = {};
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+
+	pending.oldfd = (int)ctx->args[0];
+	pending.newfd = (int)ctx->args[1];
+	bpf_map_update_elem(&pending_dups, &pid_tgid, &pending, BPF_ANY);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_dup2")
+int trace_dup2_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	struct pending_dup *pending = bpf_map_lookup_elem(&pending_dups, &pid_tgid);
+	if (!pending)
+		return 0;
+
+	int newfd = (int)ctx->ret;
+	if (newfd >= 0) {
+		struct event *e = new_event(EVENT_DUP);
+		if (e) {
+			e->arg0 = pending->oldfd;
+			e->arg1 = newfd;
+			bpf_ringbuf_submit(e, 0);
+		}
+	}
+	bpf_map_delete_elem(&pending_dups, &pid_tgid);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_dup3")
+int trace_dup3(struct trace_event_raw_sys_enter *ctx)
+{
+	struct pending_dup pending = {};
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+
+	pending.oldfd = (int)ctx->args[0];
+	pending.newfd = (int)ctx->args[1];
+	bpf_map_update_elem(&pending_dups, &pid_tgid, &pending, BPF_ANY);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_dup3")
+int trace_dup3_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	struct pending_dup *pending = bpf_map_lookup_elem(&pending_dups, &pid_tgid);
+	if (!pending)
+		return 0;
+
+	int newfd = (int)ctx->ret;
+	if (newfd >= 0) {
+		struct event *e = new_event(EVENT_DUP);
+		if (e) {
+			e->arg0 = pending->oldfd;
+			e->arg1 = newfd;
+			bpf_ringbuf_submit(e, 0);
+		}
+	}
+	bpf_map_delete_elem(&pending_dups, &pid_tgid);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_fcntl")
+int trace_fcntl(struct trace_event_raw_sys_enter *ctx)
+{
+	struct pending_dup pending = {};
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	int cmd = (int)ctx->args[1];
+
+	if (cmd != F_DUPFD && cmd != F_DUPFD_CLOEXEC)
+		return 0;
+
+	pending.oldfd = (int)ctx->args[0];
+	pending.newfd = -1;
+	bpf_map_update_elem(&pending_dups, &pid_tgid, &pending, BPF_ANY);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_fcntl")
+int trace_fcntl_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	struct pending_dup *pending = bpf_map_lookup_elem(&pending_dups, &pid_tgid);
+	if (!pending)
+		return 0;
+
+	int newfd = (int)ctx->ret;
+	if (newfd >= 0) {
+		struct event *e = new_event(EVENT_DUP);
+		if (e) {
+			e->arg0 = pending->oldfd;
+			e->arg1 = newfd;
+			bpf_ringbuf_submit(e, 0);
+		}
+	}
+	bpf_map_delete_elem(&pending_dups, &pid_tgid);
 	return 0;
 }
 

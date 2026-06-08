@@ -148,7 +148,9 @@ func (a *Agent) handle(ev sensor.Event) {
 		return
 	}
 
-	a.rememberFD(ev)
+	if a.updateFD(ev) {
+		return
+	}
 
 	if ev.Type == sensor.EventExec && (a.isBlocked(ev.TGID) || a.isBlocked(ev.PPID)) {
 		a.enforceTGID(ev.TGID, sensor.BlockActionKill, "exec by blocked lineage")
@@ -209,13 +211,35 @@ func (a *Agent) handle(ev sensor.Event) {
 	}
 }
 
-func (a *Agent) rememberFD(ev sensor.Event) {
-	if ev.Type != sensor.EventOpen || ev.Path == "" || ev.Arg1 < 0 {
-		return
+func (a *Agent) updateFD(ev sensor.Event) bool {
+	switch ev.Type {
+	case sensor.EventOpen:
+		if ev.Path == "" || ev.Arg1 < 0 {
+			return false
+		}
+		a.fdMu.Lock()
+		a.fdPaths[fdKey{TGID: ev.TGID, FD: ev.Arg1}] = ev.Path
+		a.fdMu.Unlock()
+		return false
+	case sensor.EventClose:
+		a.fdMu.Lock()
+		delete(a.fdPaths, fdKey{TGID: ev.TGID, FD: ev.Arg0})
+		a.fdMu.Unlock()
+		return true
+	case sensor.EventDup:
+		if ev.Arg0 < 0 || ev.Arg1 < 0 {
+			return true
+		}
+		a.fdMu.Lock()
+		if path := a.fdPaths[fdKey{TGID: ev.TGID, FD: ev.Arg0}]; path != "" {
+			a.fdPaths[fdKey{TGID: ev.TGID, FD: ev.Arg1}] = path
+		} else {
+			delete(a.fdPaths, fdKey{TGID: ev.TGID, FD: ev.Arg1})
+		}
+		a.fdMu.Unlock()
+		return true
 	}
-	a.fdMu.Lock()
-	a.fdPaths[fdKey{TGID: ev.TGID, FD: ev.Arg1}] = ev.Path
-	a.fdMu.Unlock()
+	return false
 }
 
 func (a *Agent) fdPath(tgid uint32, fd int32) string {
@@ -709,6 +733,12 @@ func eventName(t uint32) string {
 		return "unlink"
 	case sensor.EventTruncate:
 		return "truncate"
+	case sensor.EventBlock:
+		return "block"
+	case sensor.EventClose:
+		return "close"
+	case sensor.EventDup:
+		return "dup"
 	default:
 		return fmt.Sprintf("unknown(%d)", t)
 	}

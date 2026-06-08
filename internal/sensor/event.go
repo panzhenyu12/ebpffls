@@ -15,6 +15,8 @@ const (
 	EventUnlink
 	EventTruncate
 	EventBlock
+	EventClose
+	EventDup
 )
 
 const (
@@ -90,6 +92,10 @@ func (e Event) TypeName() string {
 		return "truncate"
 	case EventBlock:
 		return "block"
+	case EventClose:
+		return "close"
+	case EventDup:
+		return "dup"
 	default:
 		return fmt.Sprintf("unknown(%d)", e.Type)
 	}

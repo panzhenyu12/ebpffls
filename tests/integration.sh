@@ -315,6 +315,51 @@ PY
   stop_agent
 }
 
+test_fd_lifecycle_tracking() {
+  log "fd lifecycle handles dup and close reuse"
+  local dir="${TMP_DIR}/fd-life"
+  local outside="${TMP_DIR}/fd-life-outside"
+  local bl="${TMP_DIR}/fd-life-blacklist.txt"
+  local policy="${TMP_DIR}/fd-life.yaml"
+  local agent_log="${TMP_DIR}/fd-life-agent.log"
+  local dup_sim="${TMP_DIR}/fd-dup.py"
+  local close_sim="${TMP_DIR}/fd-close-reuse.py"
+  mkdir -p "${dir}" "${outside}"
+  : >"${bl}"
+  write_policy "${policy}" fd-life-test 5 kill "${dir}" "${bl}"
+
+  start_agent "${policy}" "${agent_log}"
+  cat >"${dup_sim}" <<PY
+import os, time
+p = "${dir}/dup-source.txt"
+fd = os.open(p, os.O_CREAT | os.O_RDWR, 0o600)
+dupfd = os.dup(fd)
+for i in range(100):
+    os.write(dupfd, b"x" * 4096)
+    time.sleep(0.02)
+print("survived")
+PY
+  expect_killed "fd dup path scoring" python3 "${dup_sim}"
+  wait_for_log "${agent_log}" 'write syscall on protected fd' "fd dup"
+  stop_agent
+
+  start_agent "${policy}" "${agent_log}"
+  cat >"${close_sim}" <<PY
+import os, time
+protected = "${dir}/close-source.txt"
+outside = "${outside}/reuse-target.txt"
+fd = os.open(protected, os.O_CREAT | os.O_RDWR, 0o600)
+os.close(fd)
+fd2 = os.open(outside, os.O_CREAT | os.O_WRONLY, 0o600)
+for i in range(20):
+    os.write(fd2, b"x" * 4096)
+    time.sleep(0.02)
+print("survived")
+PY
+  expect_survives "fd close clears path cache" python3 "${close_sim}"
+  stop_agent
+}
+
 test_trusted_comm_spoof_not_bypassed() {
   log "strict trust rejects comm spoof without trusted exe path"
   local dir="${TMP_DIR}/trust-spoof"
@@ -525,6 +570,7 @@ main() {
   test_dry_run_survives
   test_behavior_threshold_kills
   test_fd_write_path_scoring_kills
+  test_fd_lifecycle_tracking
   test_trusted_comm_spoof_not_bypassed
   test_immediate_rename_ioc_kills
   test_ransom_note_kills

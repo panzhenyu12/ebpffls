@@ -152,7 +152,7 @@ by only spoofing its comm name.
 ## Limitations (current)
 
 - x86_64 kprobe symbols only
-- fd-based `write`/`pwrite64`/`writev`/`ftruncate` scoring depends on fd→path state from observed open/openat/openat2; close/dup and relative dirfd resolution are still limited
+- fd-based `write`/`pwrite64`/`writev`/`ftruncate` scoring depends on fd→path state from observed open/openat/openat2; close/dup are tracked, while relative dirfd resolution is still limited
 - BPF IOC rules hardcoded; not fully synced with YAML; require active BPF LSM
 - `deny` requires active BPF LSM (`bpf` in `/sys/kernel/security/lsm`)
 - No mmap / io_uring / network egress coverage

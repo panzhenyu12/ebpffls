@@ -12,6 +12,8 @@ enum event_type {
 	EVENT_UNLINK = 5,
 	EVENT_TRUNCATE = 6,
 	EVENT_BLOCK = 7,
+	EVENT_CLOSE = 8,
+	EVENT_DUP = 9,
 };
 
 enum block_reason {

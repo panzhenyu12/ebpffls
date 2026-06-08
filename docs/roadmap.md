@@ -17,7 +17,7 @@
 ### 已知缺口
 
 - 文档曾与代码不一致（已在本次更新中对齐）
-- `write` 已基于 agent fd→path 缓存计分；dup/close 生命周期和相对 dirfd 路径仍待增强
+- `write` 已基于 agent fd→path 缓存计分；close/dup 已跟踪，相对 dirfd 路径仍待增强
 - BPF IOC 与 yaml 不同步；硬规则无 `protected_dirs` 作用域
 - blocked lineage exec 已做 kill 传播；`exec_after_blocked` 作为评分规则未实现
 - 仅 x86_64 kprobe；无 `bpf_override_return` 真 deny
@@ -47,6 +47,7 @@
 - [x] 原地加密模拟（open+write 扇出）能在阈值内告警/阻断
 - [x] 单 fd 重复 `write` 可通过 fd→path 评分触发阻断
 - [x] 单 fd 重复 `pwrite64`/`writev` 可通过 fd→path 评分触发阻断
+- [x] fd→path 缓存跟踪 close 与 dup/fcntl 复制，避免 fd 复用误杀并覆盖 dup 后写入
 - [x] 父进程 blocked 后 exec 子进程，子进程被 kill 传播阻断
 - [x] 集成测试覆盖 dry-run、行为阈值、即时 IOC、unlink/truncate、hash 黑名单、热更新扫描、blocked lineage exec
 

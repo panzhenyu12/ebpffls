@@ -98,7 +98,8 @@ writes the TGID into `blocked_tgids`.
 **Partially implemented:** blocked lineage exec is re-blocked as a kill action.
 
 **Partially implemented:** fd path-aware scoring for write/pwrite64/writev/ftruncate uses an agent
-fd→path cache and currently does not resolve dup/close lifetimes or relative dirfd paths.
+fd→path cache. The cache tracks close and dup/fcntl duplication, but relative
+dirfd path resolution is still limited.
 
 **Not yet implemented:** `exec_after_blocked` as a score-only rule, yaml-driven BPF IOC maps.
 
