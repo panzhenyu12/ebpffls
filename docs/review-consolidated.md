@@ -28,7 +28,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 | `docs/roadmap.md` | 分阶段开发计划 |
 | `docs/review-consolidated.md` | 本文件：review 摘要 |
 
-**已对齐：** 默认 `action: kill` + CLI `--dry-run=true`；`write` 未计分等限制已在 README/strategy 标明。
+**已对齐：** 默认 `action: kill` + CLI `--dry-run=true`；write fd→path 评分、BPF LSM 依赖等限制已在 README/strategy 标明。
 
 ---
 
@@ -44,7 +44,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 归一化事件 (struct event → agent.Event)
 ```
 
-**覆盖评估：** 核心文件变异调用约 60–70%；**最弱环节是 `write` 原地加密链**。
+**覆盖评估：** 核心文件变异调用约 70–80%；普通 `write` 原地加密链已做 fd→path 评分，pwrite/writev、mmap/io_uring 仍是弱点。
 
 ---
 
@@ -55,7 +55,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 | rename → 可疑后缀 / 赎金信 | 高 | 轨1 |
 | 已知 hash 样本 | 高 | 轨3 |
 | 保护域批量 open 改写 | 中 | 轨2→4 |
-| 零日原地 write 加密 | 中低 | 轨2 仍弱；已标记后 write kprobe 可补杀 |
+| 零日原地 write 加密 | 中 | 轨2 fd→path 评分；已标记后 write kprobe 可补杀 |
 | fork 子进程逃逸 | 低 | exec_after_blocked 未实现 |
 | comm 伪装 trusted | 低 | 完全豁免 |
 | mmap / io_uring | 无 | 未观测 |
@@ -65,7 +65,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 ## 5. 已知代码缺口
 
 1. BPF IOC 硬编码，与 yaml 不同步；硬规则无 `protected_dirs` 作用域；且依赖 active BPF LSM
-2. `EventWrite` 不计分；write 已有 kprobe kill 但缺少路径感知评分
+2. `EventWrite` 已基于 agent fd→path 缓存计分；dup/close、相对 dirfd、pwrite/writev 路径评分仍待补齐
 3. kprobe 仅 `bpf_send_signal`，不 `bpf_override_return`
 4. kprobe 符号仅 x86_64
 5. `exec_after_blocked` 作为评分规则未实现；kill 传播已实现

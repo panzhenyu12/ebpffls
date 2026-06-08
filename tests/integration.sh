@@ -135,6 +135,20 @@ expect_survives() {
   fi
 }
 
+wait_for_log() {
+  local logfile="$1"
+  local pattern="$2"
+  local name="$3"
+
+  for _ in $(seq 1 30); do
+    if grep -q "${pattern}" "${logfile}"; then
+      return
+    fi
+    sleep 0.1
+  done
+  fail "${name}: expected log pattern ${pattern}"
+}
+
 write_py() {
   local path="$1"
   shift
@@ -179,7 +193,7 @@ for i in range(6):
 print("survived")
 PY
   expect_survives "dry-run" python3 "${sim}"
-  grep -q '"dry_run":true' "${agent_log}" || fail "dry-run: expected alert with dry_run=true"
+  wait_for_log "${agent_log}" '"dry_run":true' "dry-run"
   stop_agent
 }
 
@@ -204,7 +218,33 @@ for i in range(100):
 print("survived")
 PY
   expect_killed "behavior threshold" python3 "${sim}"
-  grep -q 'behavior threshold' "${agent_log}" || fail "behavior threshold: expected enforcement log"
+  wait_for_log "${agent_log}" 'behavior threshold' "behavior threshold"
+  stop_agent
+}
+
+test_fd_write_path_scoring_kills() {
+  log "fd write path scoring kills repeated writes to protected fd"
+  local dir="${TMP_DIR}/fd-write"
+  local bl="${TMP_DIR}/fd-write-blacklist.txt"
+  local policy="${TMP_DIR}/fd-write.yaml"
+  local agent_log="${TMP_DIR}/fd-write-agent.log"
+  local sim="${TMP_DIR}/fd-write.py"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" fd-write-test 5 kill "${dir}" "${bl}"
+  start_agent "${policy}" "${agent_log}"
+  cat >"${sim}" <<PY
+import time
+p = "${dir}/single-fd.txt"
+f = open(p, "w")
+for i in range(100):
+    f.write("x" * 4096)
+    f.flush()
+    time.sleep(0.02)
+print("survived")
+PY
+  expect_killed "fd write path scoring" python3 "${sim}"
+  wait_for_log "${agent_log}" 'write syscall on protected fd' "fd write"
   stop_agent
 }
 
@@ -229,7 +269,7 @@ time.sleep(5)
 print("survived")
 PY
   expect_killed "rename IOC" python3 "${sim}"
-  grep -q 'protected rename to suspicious extension' "${agent_log}" || fail "rename IOC: expected IOC reason"
+  wait_for_log "${agent_log}" 'protected rename to suspicious extension' "rename IOC"
   stop_agent
 }
 
@@ -252,7 +292,7 @@ time.sleep(5)
 print("survived")
 PY
   expect_killed "ransom note IOC" python3 "${sim}"
-  grep -q 'protected ransom note creation' "${agent_log}" || fail "ransom note IOC: expected IOC reason"
+  wait_for_log "${agent_log}" 'protected ransom note creation' "ransom note IOC"
   stop_agent
 }
 
@@ -306,7 +346,7 @@ test_hash_blacklist_exec_kills() {
   write_policy "${policy}" hash-exec-test 45 kill "${dir}" "${bl}" 30s
   start_agent "${policy}" "${agent_log}"
   expect_killed "hash exec" "${BADLOOP}"
-  grep -q 'blacklisted exec' "${agent_log}" || fail "hash exec: expected blacklist alert"
+  wait_for_log "${agent_log}" 'blacklisted exec' "hash exec"
   stop_agent
 }
 
@@ -327,7 +367,7 @@ test_hash_blacklist_hot_scan_kills() {
   for _ in $(seq 1 8); do
     if ! kill -0 "${pid}" 2>/dev/null; then
       wait "${pid}" 2>/dev/null || true
-      grep -q 'blacklisted running process' "${agent_log}" || fail "hash scan: expected running-process alert"
+      wait_for_log "${agent_log}" 'blacklisted running process' "hash scan"
       stop_agent
       return
     fi
@@ -369,7 +409,7 @@ import os, sys
 status = int("${status}")
 sys.exit(0 if os.WIFSIGNALED(status) and os.WTERMSIG(status) == 9 else 1)
 PY
-  grep -q 'exec by blocked lineage' "${agent_log}" || fail "lineage: expected exec propagation log"
+  wait_for_log "${agent_log}" 'exec by blocked lineage' "lineage"
   stop_agent
 }
 
@@ -379,6 +419,7 @@ main() {
   build_badloop
   test_dry_run_survives
   test_behavior_threshold_kills
+  test_fd_write_path_scoring_kills
   test_immediate_rename_ioc_kills
   test_ransom_note_kills
   test_unlink_and_truncate_kill

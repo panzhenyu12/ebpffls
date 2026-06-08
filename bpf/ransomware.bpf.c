@@ -27,6 +27,18 @@ struct {
 	__type(value, struct block_entry);
 } blocked_tgids SEC(".maps");
 
+struct pending_open {
+	__s32 flags;
+	char path[PATH_MAX_LEN];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 16384);
+	__type(key, __u64);
+	__type(value, struct pending_open);
+} pending_opens SEC(".maps");
+
 static __always_inline __u32 current_ppid(void)
 {
 	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
@@ -471,14 +483,71 @@ int BPF_PROG(enforce_bprm_check_security, struct linux_binprm *bprm)
 SEC("tracepoint/syscalls/sys_enter_openat")
 int trace_openat(struct trace_event_raw_sys_enter *ctx)
 {
-	struct event *e = new_event(EVENT_OPEN);
-	if (!e)
-		return 0;
+	struct pending_open pending = {};
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
 
 	const char *filename = (const char *)ctx->args[1];
-	e->arg0 = (int)ctx->args[2];
-	bpf_probe_read_user_str(e->path, sizeof(e->path), filename);
-	bpf_ringbuf_submit(e, 0);
+	pending.flags = (int)ctx->args[2];
+	bpf_probe_read_user_str(pending.path, sizeof(pending.path), filename);
+	bpf_map_update_elem(&pending_opens, &pid_tgid, &pending, BPF_ANY);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_openat")
+int trace_openat_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	struct pending_open *pending = bpf_map_lookup_elem(&pending_opens, &pid_tgid);
+	if (!pending)
+		return 0;
+
+	int fd = (int)ctx->ret;
+	if (fd >= 0) {
+		struct event *e = new_event(EVENT_OPEN);
+		if (e) {
+			e->arg0 = pending->flags;
+			e->arg1 = fd;
+			__builtin_memcpy(e->path, pending->path, sizeof(e->path));
+			bpf_ringbuf_submit(e, 0);
+		}
+	}
+	bpf_map_delete_elem(&pending_opens, &pid_tgid);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_openat2")
+int trace_openat2(struct trace_event_raw_sys_enter *ctx)
+{
+	struct pending_open pending = {};
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	struct open_how *how = (struct open_how *)ctx->args[2];
+
+	const char *filename = (const char *)ctx->args[1];
+	bpf_probe_read_user_str(pending.path, sizeof(pending.path), filename);
+	bpf_probe_read_user(&pending.flags, sizeof(pending.flags), &how->flags);
+	bpf_map_update_elem(&pending_opens, &pid_tgid, &pending, BPF_ANY);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_openat2")
+int trace_openat2_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	struct pending_open *pending = bpf_map_lookup_elem(&pending_opens, &pid_tgid);
+	if (!pending)
+		return 0;
+
+	int fd = (int)ctx->ret;
+	if (fd >= 0) {
+		struct event *e = new_event(EVENT_OPEN);
+		if (e) {
+			e->arg0 = pending->flags;
+			e->arg1 = fd;
+			__builtin_memcpy(e->path, pending->path, sizeof(e->path));
+			bpf_ringbuf_submit(e, 0);
+		}
+	}
+	bpf_map_delete_elem(&pending_opens, &pid_tgid);
 	return 0;
 }
 

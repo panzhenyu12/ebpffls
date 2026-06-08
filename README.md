@@ -86,6 +86,7 @@ sudo ./bin/ebpffls monitor --config configs/ransomware.yaml --debug-events
 Within a sliding window, the agent scores:
 
 - write-open on protected paths
+- write syscalls on protected or backup file descriptors observed through open/openat/openat2
 - truncate, rename, and unlink activity
 - suspicious extensions and ransom note filenames
 - backup/snapshot path destruction
@@ -93,8 +94,6 @@ Within a sliding window, the agent scores:
 
 When a process crosses the threshold, the agent writes its TGID into a BPF map.
 Enforcement then applies via kprobes, and via LSM as well when `bpf` is active.
-
-> **Note:** `write` syscalls are observed but not yet scored. See the roadmap.
 
 ## Response actions
 
@@ -136,7 +135,7 @@ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ## Limitations (current)
 
 - x86_64 kprobe symbols only
-- `write` is in kprobe enforcement for already-marked TGIDs, but is not path-scored in agent
+- `write` path scoring depends on fd→path state from observed open/openat/openat2; close/dup and relative dirfd resolution are still limited
 - BPF IOC rules hardcoded; not fully synced with YAML; require active BPF LSM
 - `deny` requires active BPF LSM (`bpf` in `/sys/kernel/security/lsm`)
 - No mmap / io_uring / network egress coverage

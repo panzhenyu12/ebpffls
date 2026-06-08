@@ -26,6 +26,8 @@ type Agent struct {
 	sensor    *sensor.Sensor
 	options   Options
 	procs     map[uint32]*procState
+	fdMu      sync.RWMutex
+	fdPaths   map[fdKey]string
 	blockedMu sync.RWMutex
 	blocked   map[uint32]struct{}
 	blacklist *blacklist
@@ -41,6 +43,11 @@ type hashJob struct {
 	Comm   string
 	Path   string
 	Reason string
+}
+
+type fdKey struct {
+	TGID uint32
+	FD   int32
 }
 
 type procState struct {
@@ -95,6 +102,7 @@ func New(policy config.Policy, s *sensor.Sensor, options Options) *Agent {
 		sensor:    s,
 		options:   options,
 		procs:     make(map[uint32]*procState),
+		fdPaths:   make(map[fdKey]string),
 		blocked:   make(map[uint32]struct{}),
 		blacklist: bl,
 		hashes:    newHashCache(),
@@ -139,6 +147,8 @@ func (a *Agent) handle(ev sensor.Event) {
 		log.Printf("blocked op=%s pid=%d tgid=%d comm=%s", eventName(uint32(ev.Arg0)), ev.PID, ev.TGID, ev.Comm)
 		return
 	}
+
+	a.rememberFD(ev)
 
 	if ev.Type == sensor.EventExec && (a.isBlocked(ev.TGID) || a.isBlocked(ev.PPID)) {
 		a.enforceTGID(ev.TGID, sensor.BlockActionKill, "exec by blocked lineage")
@@ -197,6 +207,22 @@ func (a *Agent) handle(ev sensor.Event) {
 	if state.Score >= a.policy.Threshold && !state.Blocked {
 		a.block(state)
 	}
+}
+
+func (a *Agent) rememberFD(ev sensor.Event) {
+	if ev.Type != sensor.EventOpen || ev.Path == "" || ev.Arg1 < 0 {
+		return
+	}
+	a.fdMu.Lock()
+	a.fdPaths[fdKey{TGID: ev.TGID, FD: ev.Arg1}] = ev.Path
+	a.fdMu.Unlock()
+}
+
+func (a *Agent) fdPath(tgid uint32, fd int32) string {
+	a.fdMu.RLock()
+	path := a.fdPaths[fdKey{TGID: tgid, FD: fd}]
+	a.fdMu.RUnlock()
+	return path
 }
 
 func (a *Agent) immediateIOC(ev sensor.Event) string {
@@ -433,7 +459,16 @@ func (a *Agent) score(ev sensor.Event) (int, string) {
 			return a.policy.Scores.Write, "write-open in protected scope"
 		}
 	case sensor.EventWrite:
-		return 0, ""
+		path = a.fdPath(ev.TGID, ev.Arg0)
+		if path == "" {
+			return 0, ""
+		}
+		if a.inBackupScope(path) {
+			return a.policy.Scores.Write + a.policy.Scores.BackupDestroy, "write syscall on backup fd"
+		}
+		if a.inProtectedScope(path) {
+			return a.policy.Scores.Write, "write syscall on protected fd"
+		}
 	case sensor.EventRename:
 		if a.inProtectedScope(ev.Path) || a.inProtectedScope(ev.Path2) || a.inBackupScope(ev.Path) || a.inBackupScope(ev.Path2) {
 			if a.hasSuspiciousExtension(ev.Path2) {

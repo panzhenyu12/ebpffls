@@ -10,14 +10,14 @@
 ### 已有能力
 
 - **轨1** BPF LSM 文件名硬阻断（可疑扩展名、赎金信；要求 active BPF LSM）
-- **轨2** 用户态滑动窗口评分（保护域 open/rename/unlink/truncate）
+- **轨2** 用户态滑动窗口评分（保护域 open/write/rename/unlink/truncate）
 - **轨3** SHA256 黑名单（exec 事件 + `/proc` 周期扫描）
 - **轨4** 对已标记 TGID：x86_64 kprobe SIGKILL；active BPF LSM 时提供 deny/kill
 
 ### 已知缺口
 
 - 文档曾与代码不一致（已在本次更新中对齐）
-- `write` 不计分；已标记 TGID 的 write/pwrite64/writev 已有 kprobe kill
+- `write` 已基于 agent fd→path 缓存计分；dup/close 生命周期和相对 dirfd 路径仍待增强
 - BPF IOC 与 yaml 不同步；硬规则无 `protected_dirs` 作用域
 - blocked lineage exec 已做 kill 传播；`exec_after_blocked` 作为评分规则未实现
 - 仅 x86_64 kprobe；无 `bpf_override_return` 真 deny
@@ -34,7 +34,7 @@
 | 1.1 | 统一 IOC 策略源：启动时将 yaml `suspicious_extensions`、`ransom_note_names` 写入 BPF map | 删/减 BPF 硬编码 | P0 |
 | 1.2 | LSM 硬规则增加 `protected_dirs` 前缀 map，IOC 仅在保护域生效 | 降误杀 | P0 |
 | 1.3 | kprobe 增加 `__x64_sys_write/pwrite64/writev`；修复黑名单扫描读 `/proc/pid/status` Tgid | 已完成 | P0 |
-| 1.4 | 恢复 `EventWrite` 路径感知评分（fd→path 缓存或 BPF 带 path） | `SO_ENCRYPT_WRITE` | P0 |
+| 1.4 | 恢复 `EventWrite` 路径感知评分（fd→path 缓存或 BPF 带 path） | 已完成：open/openat/openat2 fd→path 缓存 | P0 |
 | 1.5 | 高置信语义规则即时 `BlockTGID`：保护域 +（赎金信 \| 可疑后缀 rename） | 已完成 | P0 |
 | 1.6 | 实现 blocked lineage exec 传播：blocked TGID/父 TGID 再 exec → 新 TGID 入 map | 已完成 kill 传播 | P1 |
 | 1.7 | `procState` 定期淘汰；ringbuf 丢事件计数日志 | 稳定性 | P1 |
@@ -45,7 +45,8 @@
 - [ ] `/tmp/test.locked` 不写保护域时不被拦；`/home/u/f.locked` 被拦
 - [x] 标记 TGID 后 `write` 触发 SIGKILL 或 LSM 拒绝
 - [x] 原地加密模拟（open+write 扇出）能在阈值内告警/阻断
-- [ ] 父进程 blocked 后 exec 子进程，子进程写保护域被拒
+- [x] 单 fd 重复 `write` 可通过 fd→path 评分触发阻断
+- [x] 父进程 blocked 后 exec 子进程，子进程被 kill 传播阻断
 - [x] 集成测试覆盖 dry-run、行为阈值、即时 IOC、unlink/truncate、hash 黑名单、热更新扫描、blocked lineage exec
 
 ---
