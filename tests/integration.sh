@@ -6,6 +6,7 @@ BIN="${ROOT_DIR}/bin/ebpffls"
 TMP_DIR="$(mktemp -d /tmp/ebpffls-it.XXXXXX)"
 AGENT_PID=""
 BADLOOP=""
+SPOOF=""
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "integration tests must run as root" >&2
@@ -19,6 +20,9 @@ cleanup() {
   fi
   if [[ -n "${BADLOOP}" ]]; then
     pkill -f "${BADLOOP}" 2>/dev/null || true
+  fi
+  if [[ -n "${SPOOF}" ]]; then
+    pkill -f "${SPOOF}" 2>/dev/null || true
   fi
   rm -rf "${TMP_DIR}"
 }
@@ -173,6 +177,39 @@ C
   cc "${src}" -o "${BADLOOP}"
 }
 
+build_spoof() {
+  local src="${TMP_DIR}/spoof.c"
+  SPOOF="${TMP_DIR}/spoof"
+  cat >"${src}" <<'C'
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/prctl.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+  if (argc != 2) {
+    return 2;
+  }
+  prctl(PR_SET_NAME, "ebpffls", 0, 0, 0);
+  for (int i = 0; i < 64; i++) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/spoof-%d.txt", argv[1], i);
+    int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+    if (fd < 0) {
+      return 3;
+    }
+    write(fd, "data", 4);
+    close(fd);
+    usleep(20000);
+  }
+  return 0;
+}
+C
+  cc "${src}" -o "${SPOOF}"
+}
+
 test_dry_run_survives() {
   log "dry-run alerts but does not kill"
   local dir="${TMP_DIR}/dry"
@@ -245,6 +282,27 @@ print("survived")
 PY
   expect_killed "fd write path scoring" python3 "${sim}"
   wait_for_log "${agent_log}" 'write syscall on protected fd' "fd write"
+  stop_agent
+}
+
+test_trusted_comm_spoof_not_bypassed() {
+  log "strict trust rejects comm spoof without trusted exe path"
+  local dir="${TMP_DIR}/trust-spoof"
+  local bl="${TMP_DIR}/trust-spoof-blacklist.txt"
+  local policy="${TMP_DIR}/trust-spoof.yaml"
+  local agent_log="${TMP_DIR}/trust-spoof-agent.log"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" trust-spoof-test 3 kill "${dir}" "${bl}"
+  cat >>"${policy}" <<'YAML'
+trusted_exe_paths:
+  - /usr/bin
+trusted_uids:
+  - 0
+YAML
+  start_agent "${policy}" "${agent_log}"
+  expect_killed "trusted comm spoof" "${SPOOF}" "${dir}"
+  wait_for_log "${agent_log}" 'behavior threshold' "trusted comm spoof"
   stop_agent
 }
 
@@ -433,9 +491,11 @@ main() {
   command -v cc >/dev/null || fail "cc is required for integration tests"
   [[ -x "${BIN}" ]] || fail "missing binary ${BIN}; run make build first"
   build_badloop
+  build_spoof
   test_dry_run_survives
   test_behavior_threshold_kills
   test_fd_write_path_scoring_kills
+  test_trusted_comm_spoof_not_bypassed
   test_immediate_rename_ioc_kills
   test_ransom_note_kills
   test_unlink_and_truncate_kill

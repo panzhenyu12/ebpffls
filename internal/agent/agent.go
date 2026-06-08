@@ -134,7 +134,7 @@ func (a *Agent) Run(ctx context.Context) error {
 }
 
 func (a *Agent) handle(ev sensor.Event) {
-	if a.isTrusted(ev.Comm) {
+	if a.isTrustedEvent(ev) {
 		return
 	}
 
@@ -365,7 +365,7 @@ func (a *Agent) scanBlacklistOnce() {
 		return
 	}
 	for _, proc := range procs {
-		if a.isTrusted(proc.Comm) {
+		if a.isTrustedProc(proc) {
 			continue
 		}
 		hash, ok := a.procHash(proc.Exe)
@@ -547,9 +547,48 @@ func (a *Agent) inBackupScope(path string) bool {
 	return hasDirPrefix(path, a.policy.BackupDirs)
 }
 
-func (a *Agent) isTrusted(comm string) bool {
+func (a *Agent) isTrustedEvent(ev sensor.Event) bool {
+	if !a.trustedComm(ev.Comm) {
+		return false
+	}
+	exe := ""
+	if len(a.policy.TrustedExePaths) > 0 {
+		if info, err := readProc(ev.TGID); err == nil {
+			exe = info.Exe
+		}
+	}
+	return a.isTrustedIdentityMatched(exe, ev.UID)
+}
+
+func (a *Agent) isTrustedProc(proc procInfo) bool {
+	if !a.trustedComm(proc.Comm) {
+		return false
+	}
+	return a.isTrustedIdentityMatched(proc.Exe, proc.UID)
+}
+
+func (a *Agent) isTrustedIdentityMatched(exe string, uid uint32) bool {
+	if len(a.policy.TrustedUIDs) > 0 && !containsUID(a.policy.TrustedUIDs, uid) {
+		return false
+	}
+	if len(a.policy.TrustedExePaths) > 0 && !matchesAnyPath(exe, a.policy.TrustedExePaths) {
+		return false
+	}
+	return true
+}
+
+func (a *Agent) trustedComm(comm string) bool {
 	for _, trusted := range a.policy.TrustedProcesses {
 		if comm == trusted {
+			return true
+		}
+	}
+	return false
+}
+
+func containsUID(uids []uint32, uid uint32) bool {
+	for _, candidate := range uids {
+		if uid == candidate {
 			return true
 		}
 	}
@@ -587,6 +626,23 @@ func hasDirPrefix(path string, dirs []string) bool {
 		cleanDir := filepath.Clean(dir)
 		cleanPath := filepath.Clean(path)
 		if cleanPath == cleanDir || strings.HasPrefix(cleanPath, cleanDir+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesAnyPath(path string, candidates []string) bool {
+	if path == "" {
+		return false
+	}
+	cleanPath := filepath.Clean(path)
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		cleanCandidate := filepath.Clean(candidate)
+		if cleanPath == cleanCandidate || strings.HasPrefix(cleanPath, cleanCandidate+"/") {
 			return true
 		}
 	}

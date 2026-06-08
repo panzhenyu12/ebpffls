@@ -33,6 +33,8 @@ type Policy struct {
 	ProtectedDirs        []string      `yaml:"protected_dirs"`
 	BackupDirs           []string      `yaml:"backup_dirs"`
 	TrustedProcesses     []string      `yaml:"trusted_processes"`
+	TrustedExePaths      []string      `yaml:"trusted_exe_paths"`
+	TrustedUIDs          []uint32      `yaml:"trusted_uids"`
 	BlacklistHashes      []string      `yaml:"blacklist_hashes"`
 	BlacklistHashFiles   []string      `yaml:"blacklist_hash_files"`
 	BlacklistScan        time.Duration `yaml:"-"`

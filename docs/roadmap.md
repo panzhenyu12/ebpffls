@@ -60,7 +60,7 @@
 | 2.1 | `procFeatures`：`distinct_paths`、`open_write_pairs`、`rename_suffix_count` | L2 特征向量 |
 | 2.2 | yaml 支持 `rules[]`（when 组合 + action） | L3 可组合策略 |
 | 2.3 | 加密状态机：`SCAN`→`STAGE`→`FINALIZE`（先实现 STAGE/FINALIZE） | 模式识别 |
-| 2.4 | trust 模型升级：comm + exe 路径 + uid；备份破坏不减分 | 降绕过 |
+| 2.4 | trust 模型升级：comm + exe 路径 + uid；备份破坏不减分 | 部分完成：comm + exe 路径 + uid |
 | 2.5 | ftruncate fd→path 解析 | 已完成：复用 open/openat/openat2 fd→path 缓存 |
 | 2.6 | 结构化 metrics：alert/block/blacklist 计数导出 | 可运营 |
 
@@ -68,7 +68,7 @@
 
 - [ ] 可用 yaml 定义一条「distinct_paths > N → block」规则
 - [ ] 不改名加密可通过扇出规则触发
-- [ ] 伪装 comm 但 exe 路径不在 trust 列表仍计分
+- [x] 伪装 comm 但 exe 路径不在 trust 列表仍计分
 
 ---
 

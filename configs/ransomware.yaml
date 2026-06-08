@@ -30,6 +30,25 @@ trusted_processes:
   - bzip2
   - xz
   - backup
+trusted_exe_paths:
+  - /usr/bin/apt
+  - /usr/bin/apt-get
+  - /usr/bin/dpkg
+  - /usr/bin/rsync
+  - /usr/bin/tar
+  - /usr/bin/gzip
+  - /usr/bin/bzip2
+  - /usr/bin/xz
+  - /usr/lib/snapd/snapd
+  - /lib/systemd/systemd
+  - /usr/lib/systemd/systemd
+  - /lib/systemd/systemd-journald
+  - /usr/lib/systemd/systemd-journald
+  - /usr/local/bin/ebpffls
+  - /usr/bin/ebpffls
+  - /root/ebpffls/bin/ebpffls
+trusted_uids:
+  - 0
 blacklist_scan: 5s
 blacklist_hashes: []
 blacklist_hash_files:

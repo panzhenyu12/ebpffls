@@ -123,6 +123,23 @@ File format (one SHA-256 per line):
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ```
 
+## Trust model
+
+Trusted process exemptions can require more than a process name:
+
+```yaml
+trusted_processes:
+  - rsync
+trusted_exe_paths:
+  - /usr/bin/rsync
+trusted_uids:
+  - 0
+```
+
+If `trusted_exe_paths` or `trusted_uids` are configured, the comm allowlist must
+also match those identity fields. This prevents a process from bypassing scoring
+by only spoofing its comm name.
+
 ## Documentation
 
 | Doc | Description |

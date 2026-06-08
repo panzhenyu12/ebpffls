@@ -25,6 +25,7 @@ type blacklist struct {
 type procInfo struct {
 	PID  uint32
 	TGID uint32
+	UID  uint32
 	Comm string
 	Exe  string
 }
@@ -133,16 +134,20 @@ func readProc(pid uint32) (procInfo, error) {
 	status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
 	if err == nil {
 		for _, line := range strings.Split(string(status), "\n") {
-			if !strings.HasPrefix(line, "Tgid:") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
 				continue
 			}
-			fields := strings.Fields(line)
-			if len(fields) == 2 {
+			switch fields[0] {
+			case "Tgid:":
 				if tgid, err := strconv.ParseUint(fields[1], 10, 32); err == nil {
 					info.TGID = uint32(tgid)
 				}
+			case "Uid:":
+				if uid, err := strconv.ParseUint(fields[1], 10, 32); err == nil {
+					info.UID = uint32(uid)
+				}
 			}
-			break
 		}
 	}
 	exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))

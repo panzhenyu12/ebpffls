@@ -73,6 +73,14 @@ Triggers:
 - `execve` events (async hash queue)
 - Periodic `/proc` scan (`blacklist_scan`, default 5s)
 
+## Trust Model
+
+Trusted process exemptions start with `trusted_processes` (`comm`). When
+`trusted_exe_paths` or `trusted_uids` are configured, the agent also checks
+`/proc/<tgid>/exe` and the event UID before skipping scoring or blacklist scans.
+This blocks simple comm spoofing where malware renames itself to a trusted
+process name.
+
 ## Policy model (behavior track)
 
 Within a sliding window (`window`, default 10s), per-TGID score includes:
