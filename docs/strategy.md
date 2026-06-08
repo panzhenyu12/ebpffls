@@ -1,42 +1,105 @@
 # Anti-ransomware Strategy
 
-This project follows a Tetragon-like model:
+## Model
 
-1. Observe kernel events with eBPF.
-2. Normalize events in a userspace agent.
-3. Match events against policy.
-4. Apply an action.
+ebpffls follows a Tetragon-like pipeline:
 
-## Why behavior instead of signatures?
+1. **Observe** kernel activity with eBPF (tracepoints + LSM + kprobes).
+2. **Normalize** events in the Go agent.
+3. **Match** against policy (behavior scores, IOC rules, hash blacklist).
+4. **Enforce** via BPF maps, LSM hooks, and syscall kprobes.
 
-Ransomware families change names, packers, and hashes quickly. The expensive
-behavior is harder to hide: bulk file mutation, rename/unlink loops, ransom note
-creation, and backup destruction.
+## Why behavior plus IOC?
 
-## MVP Signals
+Ransomware families change names, packers, and hashes quickly. Bulk file
+mutation, rename loops, ransom notes, and backup destruction are harder to hide
+than static signatures. ebpffls therefore uses **four complementary tracks**:
 
-- `execve`: establish process identity and command lineage.
-- `openat`: detect write/truncate intent and suspicious file names.
-- `write`: measure write rate per process.
-- `renameat`/`renameat2`: detect encrypted replacement patterns.
-- `unlinkat`: detect destructive cleanup.
-- `truncate`/`ftruncate`: detect direct file destruction.
+| Track | Mechanism | Best against |
+|-------|-----------|--------------|
+| 1 — IOC fast path | BPF LSM hard deny on suspicious names, when active | Suffix renames, ransom notes |
+| 2 — Behavior slow path | Sliding-window score on protected paths | Zero-day bulk encryption |
+| 3 — Hash blacklist | SHA-256 of executables in userspace | Known samples |
+| 4 — Enforcement | kprobes on marked TGIDs; LSM deny when active | Stopping an already-identified process |
 
-## Response Levels
+See [ransomware-call-abstraction.md](./ransomware-call-abstraction.md) for how
+syscalls map to semantic ransomware operations.
 
-- `log`: emit structured alerts.
-- `deny`: after userspace identifies a process, write its TGID into an eBPF map.
-  BPF LSM hooks synchronously return `-EPERM` on later file mutation or exec
-  attempts.
-- `kill`: after userspace identifies a process, write its TGID into an eBPF map.
-  kprobe programs on sensitive syscalls call `bpf_send_signal(SIGKILL)` when
-  the marked process continues file mutation or exec activity.
+## Call surface (MVP signals)
 
-Default policy uses `log` to avoid disrupting legitimate workloads.
+| Syscall | Semantic op | Observation | Scoring | Enforcement |
+|---------|-------------|-------------|---------|-------------|
+| `execve` | Spawn | tracepoint | blacklist only | kprobe; optional LSM after mark |
+| `openat` | Stage open | tracepoint | protected write-open | kprobe; optional LSM |
+| `write` | Encrypt in-place | tracepoint | **not scored yet** | optional LSM after mark; **no kprobe** |
+| `renameat(2)` | Suffix replace | tracepoint | protected rename | kprobe; optional LSM IOC |
+| `unlinkat` | Delete | tracepoint | protected/backup | kprobe; optional LSM |
+| `truncate` / `ftruncate` | Truncate | tracepoint | protected/backup | kprobe; optional LSM |
 
-## Hash Blacklist
+Gaps: `mmap`, `copy_file_range`, `io_uring`, directory scan syscalls — see
+[roadmap.md](./roadmap.md).
 
-Hash matching is intentionally kept in Go userspace. The agent computes SHA-256
-with a stat-based cache and compares it to local policy hashes plus downloaded
-hash files. eBPF stores only TGIDs that already matched a policy; it does not
-read executable files or compute hashes.
+## Response levels
+
+| Action | Behavior |
+|--------|----------|
+| `log` | Emit JSON alert only; do not write `blocked_tgids`. |
+| `deny` | Write TGID to map; BPF LSM returns `-EPERM` only when `bpf` LSM is active. |
+| `kill` | Write TGID with kill action; kprobes send `SIGKILL` on sensitive syscalls; userspace also signals the process group leader. |
+
+**Defaults today**
+
+- Policy file `configs/ransomware.yaml`: `action: kill`
+- CLI: `--dry-run=true` by default, so first runs only alert unless you pass `--dry-run=false`
+
+Hash blacklist matches always enforce kill (independent of policy action).
+
+On the current reference server, `CONFIG_BPF_LSM=y` is available but `bpf` is
+not listed in `/sys/kernel/security/lsm`, so the reliable enforcement path is
+userspace immediate SIGKILL plus x86_64 kprobe SIGKILL. Enabling BPF LSM at boot
+is required for true `deny` and IOC hard-deny behavior.
+
+## Hash blacklist
+
+Hash matching stays in Go userspace. The agent computes SHA-256 with a
+stat-based cache and compares against `blacklist_hashes` and
+`blacklist_hash_files`. eBPF never reads executables or hashes files.
+
+Triggers:
+
+- `execve` events (async hash queue)
+- Periodic `/proc` scan (`blacklist_scan`, default 5s)
+
+## Policy model (behavior track)
+
+Within a sliding window (`window`, default 10s), per-TGID score includes:
+
+- write-open on protected or backup paths
+- truncate, rename, unlink on protected or backup paths
+- suspicious extensions and ransom note filenames on create
+- backup destruction bonus
+- high-rate bonus when open/write event count ≥ 64
+
+When score ≥ `threshold` (default 45), the agent alerts and (unless dry-run)
+writes the TGID into `blocked_tgids`.
+
+**Not yet implemented:** `exec_after_blocked` scoring, `write` path-aware scoring,
+yaml-driven BPF IOC maps, protected-scope IOC enforcement.
+
+## Architecture diagram
+
+```
+Syscalls / VFS
+     │
+     ├─► Tracepoints ──► ringbuf ──► Go agent ──► score / blacklist
+     │                                      │
+     │                                      ▼
+     │                               blocked_tgids map
+     │
+     ├─► optional LSM (IOC hard deny + marked TGID deny/kill)
+     └─► kprobes (marked TGID SIGKILL on sensitive syscalls, x86_64)
+```
+
+## Next steps
+
+See [roadmap.md](./roadmap.md) for phased development plan.

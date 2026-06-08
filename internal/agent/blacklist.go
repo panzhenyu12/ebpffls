@@ -24,6 +24,7 @@ type blacklist struct {
 
 type procInfo struct {
 	PID  uint32
+	TGID uint32
 	Comm string
 	Exe  string
 }
@@ -124,10 +125,25 @@ func isHex(s string) bool {
 }
 
 func readProc(pid uint32) (procInfo, error) {
-	info := procInfo{PID: pid}
+	info := procInfo{PID: pid, TGID: pid}
 	comm, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
 	if err == nil {
 		info.Comm = strings.TrimSpace(string(comm))
+	}
+	status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err == nil {
+		for _, line := range strings.Split(string(status), "\n") {
+			if !strings.HasPrefix(line, "Tgid:") {
+				continue
+			}
+			fields := strings.Fields(line)
+			if len(fields) == 2 {
+				if tgid, err := strconv.ParseUint(fields[1], 10, 32); err == nil {
+					info.TGID = uint32(tgid)
+				}
+			}
+			break
+		}
 	}
 	exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
 	if err == nil {

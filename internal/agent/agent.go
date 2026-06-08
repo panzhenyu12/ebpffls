@@ -268,7 +268,7 @@ func (a *Agent) scanBlacklistOnce() {
 		}
 		hash, ok := a.procHash(proc.Exe)
 		if ok && a.blacklist.matchHash(hash) {
-			a.enforceBlacklist(proc.PID, proc.PID, 0, 0, proc.Comm, proc.Exe, hash, "blacklisted running process")
+			a.enforceBlacklist(proc.TGID, proc.PID, 0, 0, proc.Comm, proc.Exe, hash, "blacklisted running process")
 		}
 	}
 }

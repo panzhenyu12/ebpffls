@@ -1,20 +1,29 @@
 # ebpffls
 
-`ebpffls` is a Go/eBPF anti-ransomware prototype inspired by Cilium Tetragon's
+`ebpffls` is a Go/eBPF anti-ransomware runtime guard inspired by Cilium Tetragon's
 event, policy, and action model.
 
-It observes Linux runtime behavior with eBPF, correlates file activity in a Go
-agent, scores suspicious ransomware-like behavior, and can log, deny, or kill
-offending processes.
+It observes Linux file and process activity with eBPF, correlates behavior in a Go
+agent, and can **log**, **deny**, or **kill** offending processes.
 
 ## Design
 
-- eBPF sensor: low-overhead syscall tracepoints for process and file activity.
-- Go agent: ring buffer reader, process/file behavior correlation, sliding-window scoring.
-- Policy: YAML configuration similar in spirit to Tetragon tracing policies.
-- Actions: `log`, `deny`, or `kill`.
+Four complementary defense tracks:
 
-The first version is deliberately conservative: it defaults to `log` mode.
+| Track | What it does |
+|-------|----------------|
+| **IOC fast path** | BPF LSM can instantly deny suspicious extensions and ransom-note filenames when `bpf` LSM is active |
+| **Behavior scoring** | Go agent scores bulk mutation on configured protected directories |
+| **Hash blacklist** | Userspace SHA-256 match against known ransomware samples |
+| **Enforcement** | Marked TGIDs are killed via x86_64 syscall kprobes; BPF LSM adds deny semantics when active |
+
+Components:
+
+- **eBPF sensor** — tracepoints, optional BPF LSM hooks, kprobes on sensitive syscalls
+- **Go agent** — ring buffer reader, sliding-window scoring, blacklist scanner
+- **Policy** — YAML configuration (`configs/ransomware.yaml`)
+
+For syscall-to-semantics mapping see [docs/ransomware-call-abstraction.md](docs/ransomware-call-abstraction.md).
 
 ## Build
 
@@ -23,6 +32,15 @@ Requirements on the target Linux host:
 - Go 1.22+
 - clang/llvm
 - kernel BTF at `/sys/kernel/btf/vmlinux`
+- BPF LSM compiled for optional `deny` / IOC hard-deny mode. Check active LSMs with:
+
+```bash
+cat /sys/kernel/security/lsm
+```
+
+If `bpf` is not listed, tracepoints, userspace scoring, hash blacklist, and
+kprobe-based `kill` enforcement can still work; LSM `deny` and IOC hard-deny
+will not be active.
 
 ```bash
 make build
@@ -30,43 +48,91 @@ make build
 
 ## Run
 
+Observation only (default — dry-run prevents kernel enforcement):
+
 ```bash
 sudo ./bin/ebpffls monitor --config configs/ransomware.yaml
 ```
 
-Set policy `action: deny` or `action: kill`, then use `--dry-run=false` only
-after validating policies in your environment.
+Enable enforcement after validating policies:
 
 ```bash
 sudo ./bin/ebpffls monitor --config configs/ransomware.yaml --dry-run=false
 ```
 
-## Policy Model
+Debug raw events:
 
-The default policy scores behavior within a sliding window:
+```bash
+sudo ./bin/ebpffls monitor --config configs/ransomware.yaml --debug-events
+```
 
-- high-rate writes to protected paths
+## Defaults
+
+| Setting | Value | Notes |
+|---------|-------|-------|
+| Policy `action` | `kill` | in `configs/ransomware.yaml` |
+| CLI `--dry-run` | `true` | enforcement off until explicitly disabled |
+| `threshold` | `45` | behavior score in 10s window |
+| `block_ttl` | `10m` | marked TGID expiry |
+
+## Policy model (behavior track)
+
+Within a sliding window, the agent scores:
+
+- write-open on protected paths
 - truncate, rename, and unlink activity
-- suspicious extensions
-- ransom note filenames
-- backup/snapshot destruction
+- suspicious extensions and ransom note filenames
+- backup/snapshot path destruction
+- high-rate bonus when open/write count ≥ 64
 
-When a process crosses a policy threshold, the agent writes its TGID into an
-eBPF map. The current primary enforcement mode is `kill`: eBPF kprobes call
-`bpf_send_signal(SIGKILL)` when the marked process hits sensitive file or exec
-syscalls again. `deny` is wired for BPF LSM environments and will be expanded
-with `bpf_override_return` after the kill path is stable.
+When a process crosses the threshold, the agent writes its TGID into a BPF map.
+Enforcement then applies via kprobes, and via LSM as well when `bpf` is active.
 
-## Hash Blacklist
+> **Note:** `write` syscalls are observed but not yet scored. See the roadmap.
 
-Go computes SHA-256 hashes in userspace and compares them with local or
-downloaded blacklist files. eBPF never computes file hashes. When a hash matches,
-the agent writes the TGID into the kernel map and immediately sends SIGKILL;
-subsequent sensitive syscalls are also killed from eBPF.
+## Response actions
 
-Blacklist file format:
+| Action | Effect |
+|--------|--------|
+| `log` | JSON alert only |
+| `deny` | LSM returns `-EPERM` for marked TGID when BPF LSM is active |
+| `kill` | kprobes send `SIGKILL` on sensitive syscalls; userspace also signals the process |
+
+## Hash blacklist
+
+Go computes SHA-256 in userspace (eBPF does not hash files). On match, the
+agent kills immediately and marks the TGID in the kernel map.
+
+Configure in `configs/ransomware.yaml`:
+
+```yaml
+blacklist_hash_files:
+  - configs/blacklist.txt
+blacklist_scan: 5s
+```
+
+File format (one SHA-256 per line):
 
 ```text
-# one SHA-256 per line
+# comments allowed
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ```
+
+## Documentation
+
+| Doc | Description |
+|-----|-------------|
+| [docs/strategy.md](docs/strategy.md) | Architecture and response levels |
+| [docs/ransomware-call-abstraction.md](docs/ransomware-call-abstraction.md) | Ransomware syscall / semantic abstraction |
+| [docs/roadmap.md](docs/roadmap.md) | Development plan |
+| [docs/review-consolidated.md](docs/review-consolidated.md) | Code + doc review notes |
+
+## Limitations (current)
+
+- x86_64 kprobe symbols only
+- `write` not in kprobe enforcement list; not path-scored in agent
+- BPF IOC rules hardcoded; not fully synced with YAML; require active BPF LSM
+- `deny` requires active BPF LSM (`bpf` in `/sys/kernel/security/lsm`)
+- No mmap / io_uring / network egress coverage
+
+See [docs/roadmap.md](docs/roadmap.md) for planned improvements.
