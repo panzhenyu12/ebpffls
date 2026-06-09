@@ -21,6 +21,7 @@ type Scores struct {
 	ExecAfterBlocked    int `yaml:"exec_after_blocked"`
 	Scan                int `yaml:"scan"`
 	Mmap                int `yaml:"mmap"`
+	IOUring             int `yaml:"io_uring"`
 }
 
 type Rule struct {
@@ -125,6 +126,9 @@ func Load(path string) (Policy, error) {
 	}
 	if p.Scores.Mmap == 0 {
 		p.Scores.Mmap = 3
+	}
+	if p.Scores.IOUring == 0 {
+		p.Scores.IOUring = 1
 	}
 	for i := range p.Rules {
 		r := &p.Rules[i]

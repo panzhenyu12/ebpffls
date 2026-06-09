@@ -96,6 +96,7 @@ scores:
   exec_after_blocked: 10
   scan: 1
   mmap: 3
+  io_uring: 1
 YAML
 }
 
@@ -216,6 +217,7 @@ scores:
   exec_after_blocked: 10
   scan: 1
   mmap: 3
+  io_uring: 1
 YAML
   start_agent "${policy}" "${agent_log}" dry-run
   wait_for_log "${agent_log}" 'synced_bpf_policy ioc_extensions=1 ransom_notes=1 protected_dirs=1' "BPF IOC policy sync"
@@ -428,6 +430,74 @@ print("survived")
 PY
   expect_killed "writable mmap scoring" python3 "${sim}"
   wait_for_log "${agent_log}" 'writable mmap in protected scope' "writable mmap"
+  stop_agent
+}
+
+test_io_uring_after_protected_activity_scores() {
+  log "io_uring activity after protected writes scores when supported"
+  local dir="${TMP_DIR}/io-uring"
+  local bl="${TMP_DIR}/io-uring-blacklist.txt"
+  local policy="${TMP_DIR}/io-uring.yaml"
+  local agent_log="${TMP_DIR}/io-uring-agent.log"
+  local src="${TMP_DIR}/io_uring_probe.c"
+  local sim="${TMP_DIR}/io_uring_probe"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  cat >"${src}" <<'C'
+#include <errno.h>
+#include <fcntl.h>
+#include <linux/io_uring.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+  if (argc != 2) {
+    return 2;
+  }
+  char path[512];
+  snprintf(path, sizeof(path), "%s/seed.txt", argv[1]);
+  int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+  if (fd < 0) {
+    return 3;
+  }
+  write(fd, "data", 4);
+  close(fd);
+
+  struct io_uring_params params;
+  memset(&params, 0, sizeof(params));
+  int ring = syscall(__NR_io_uring_setup, 2, &params);
+  if (ring < 0) {
+    if (errno == ENOSYS || errno == EPERM) {
+      return 77;
+    }
+    return 4;
+  }
+  long rc = syscall(__NR_io_uring_enter, ring, 0, 0, 0, 0, 0);
+  close(ring);
+  if (rc < 0 && errno == ENOSYS) {
+    return 77;
+  }
+  return 0;
+}
+C
+  cc "${src}" -o "${sim}"
+  write_policy "${policy}" io-uring-test 3 log "${dir}" "${bl}"
+  start_agent "${policy}" "${agent_log}" dry-run
+  set +e
+  "${sim}" "${dir}"
+  local rc=$?
+  set -e
+  if [[ "${rc}" -eq 77 ]]; then
+    log "io_uring unsupported or blocked by kernel policy; scoring check skipped"
+    stop_agent
+    return
+  fi
+  if [[ "${rc}" -ne 0 ]]; then
+    fail "io_uring probe exited ${rc}"
+  fi
+  wait_for_log "${agent_log}" 'io_uring activity after protected file activity' "io_uring scoring"
   stop_agent
 }
 
@@ -880,6 +950,7 @@ main() {
   test_feature_rule_distinct_paths_kills
   test_getdents64_scan_scores_and_kills
   test_writable_mmap_scores_and_kills
+  test_io_uring_after_protected_activity_scores
   test_fd_write_path_scoring_kills
   test_fd_lifecycle_tracking
   test_relative_dirfd_path_scoring_kills

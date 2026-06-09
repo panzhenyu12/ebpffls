@@ -376,6 +376,12 @@ int kp_override_mmap(struct pt_regs *ctx)
 	return kill_blocked_syscall();
 }
 
+SEC("kprobe/__x64_sys_io_uring_enter")
+int kp_override_io_uring_enter(struct pt_regs *ctx)
+{
+	return kill_blocked_syscall();
+}
+
 SEC("lsm/file_open")
 int BPF_PROG(enforce_file_open, struct file *file)
 {
@@ -679,6 +685,20 @@ int trace_mmap(struct trace_event_raw_sys_enter *ctx)
 		return 0;
 	e->arg0 = (int)ctx->args[4];
 	e->arg1 = prot;
+	e->size = (__u64)ctx->args[1];
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_io_uring_enter")
+int trace_io_uring_enter(struct trace_event_raw_sys_enter *ctx)
+{
+	struct event *e = new_event(EVENT_IO_URING);
+	if (!e)
+		return 0;
+
+	e->arg0 = (int)ctx->args[0];
+	e->arg1 = (int)ctx->args[2];
 	e->size = (__u64)ctx->args[1];
 	bpf_ringbuf_submit(e, 0);
 	return 0;

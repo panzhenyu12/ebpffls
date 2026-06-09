@@ -274,6 +274,28 @@ func TestScoreWritableMmapUsesFDPath(t *testing.T) {
 	}
 }
 
+func TestScoreIOUringRequiresPriorProtectedActivity(t *testing.T) {
+	a := &Agent{
+		policy: config.Policy{Scores: config.Scores{IOUring: 2}},
+		procs: map[uint32]*procState{
+			42: {Features: procFeatures{DistinctPaths: 1}},
+			43: {},
+		},
+	}
+
+	score, reason := a.score(sensor.Event{Type: sensor.EventIOUring, TGID: 42})
+	if score != 2 {
+		t.Fatalf("score = %d, want 2", score)
+	}
+	if reason != "io_uring activity after protected file activity" {
+		t.Fatalf("reason = %q", reason)
+	}
+	score, _ = a.score(sensor.Event{Type: sensor.EventIOUring, TGID: 43})
+	if score != 0 {
+		t.Fatalf("score without prior activity = %d, want 0", score)
+	}
+}
+
 func TestMatchRuleReturnsFirstMatchingRule(t *testing.T) {
 	a := &Agent{
 		policy: config.Policy{

@@ -789,6 +789,12 @@ func (a *Agent) score(ev sensor.Event) (int, string) {
 	switch ev.Type {
 	case sensor.EventExec:
 		return 0, ""
+	case sensor.EventIOUring:
+		state := a.procs[ev.TGID]
+		if state == nil || state.Features.DistinctPaths == 0 {
+			return 0, ""
+		}
+		return a.policy.Scores.IOUring, "io_uring activity after protected file activity"
 	case sensor.EventScan:
 		path = a.touchFD(ev.TGID, ev.Arg0, ev.Timestamp)
 		if path == "" {

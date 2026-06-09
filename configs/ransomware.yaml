@@ -80,3 +80,4 @@ scores:
   exec_after_blocked: 10
   scan: 1
   mmap: 3
+  io_uring: 1

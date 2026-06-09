@@ -57,38 +57,44 @@ func New(policy config.Policy) (*Sensor, error) {
 		category string
 		name     string
 		prog     *ebpf.Program
+		optional bool
 	}{
-		{"syscalls", "sys_enter_execve", objs.TraceExecve},
-		{"syscalls", "sys_enter_openat", objs.TraceOpenat},
-		{"syscalls", "sys_exit_openat", objs.TraceOpenatExit},
-		{"syscalls", "sys_enter_openat2", objs.TraceOpenat2},
-		{"syscalls", "sys_exit_openat2", objs.TraceOpenat2Exit},
-		{"syscalls", "sys_enter_write", objs.TraceWrite},
-		{"syscalls", "sys_enter_pwrite64", objs.TracePwrite64},
-		{"syscalls", "sys_enter_writev", objs.TraceWritev},
-		{"syscalls", "sys_enter_copy_file_range", objs.TraceCopyFileRange},
-		{"syscalls", "sys_enter_getdents64", objs.TraceGetdents64},
-		{"syscalls", "sys_enter_mmap", objs.TraceMmap},
-		{"syscalls", "sys_enter_close", objs.TraceClose},
-		{"syscalls", "sys_enter_dup", objs.TraceDup},
-		{"syscalls", "sys_exit_dup", objs.TraceDupExit},
-		{"syscalls", "sys_enter_dup2", objs.TraceDup2},
-		{"syscalls", "sys_exit_dup2", objs.TraceDup2Exit},
-		{"syscalls", "sys_enter_dup3", objs.TraceDup3},
-		{"syscalls", "sys_exit_dup3", objs.TraceDup3Exit},
-		{"syscalls", "sys_enter_fcntl", objs.TraceFcntl},
-		{"syscalls", "sys_exit_fcntl", objs.TraceFcntlExit},
-		{"syscalls", "sys_enter_rename", objs.TraceRename},
-		{"syscalls", "sys_enter_renameat", objs.TraceRenameat},
-		{"syscalls", "sys_enter_renameat2", objs.TraceRenameat2},
-		{"syscalls", "sys_enter_unlink", objs.TraceUnlink},
-		{"syscalls", "sys_enter_unlinkat", objs.TraceUnlinkat},
-		{"syscalls", "sys_enter_truncate", objs.TraceTruncate},
-		{"syscalls", "sys_enter_ftruncate", objs.TraceFtruncate},
+		{"syscalls", "sys_enter_execve", objs.TraceExecve, false},
+		{"syscalls", "sys_enter_openat", objs.TraceOpenat, false},
+		{"syscalls", "sys_exit_openat", objs.TraceOpenatExit, false},
+		{"syscalls", "sys_enter_openat2", objs.TraceOpenat2, false},
+		{"syscalls", "sys_exit_openat2", objs.TraceOpenat2Exit, false},
+		{"syscalls", "sys_enter_write", objs.TraceWrite, false},
+		{"syscalls", "sys_enter_pwrite64", objs.TracePwrite64, false},
+		{"syscalls", "sys_enter_writev", objs.TraceWritev, false},
+		{"syscalls", "sys_enter_copy_file_range", objs.TraceCopyFileRange, false},
+		{"syscalls", "sys_enter_getdents64", objs.TraceGetdents64, false},
+		{"syscalls", "sys_enter_mmap", objs.TraceMmap, false},
+		{"syscalls", "sys_enter_io_uring_enter", objs.TraceIoUringEnter, true},
+		{"syscalls", "sys_enter_close", objs.TraceClose, false},
+		{"syscalls", "sys_enter_dup", objs.TraceDup, false},
+		{"syscalls", "sys_exit_dup", objs.TraceDupExit, false},
+		{"syscalls", "sys_enter_dup2", objs.TraceDup2, false},
+		{"syscalls", "sys_exit_dup2", objs.TraceDup2Exit, false},
+		{"syscalls", "sys_enter_dup3", objs.TraceDup3, false},
+		{"syscalls", "sys_exit_dup3", objs.TraceDup3Exit, false},
+		{"syscalls", "sys_enter_fcntl", objs.TraceFcntl, false},
+		{"syscalls", "sys_exit_fcntl", objs.TraceFcntlExit, false},
+		{"syscalls", "sys_enter_rename", objs.TraceRename, false},
+		{"syscalls", "sys_enter_renameat", objs.TraceRenameat, false},
+		{"syscalls", "sys_enter_renameat2", objs.TraceRenameat2, false},
+		{"syscalls", "sys_enter_unlink", objs.TraceUnlink, false},
+		{"syscalls", "sys_enter_unlinkat", objs.TraceUnlinkat, false},
+		{"syscalls", "sys_enter_truncate", objs.TraceTruncate, false},
+		{"syscalls", "sys_enter_ftruncate", objs.TraceFtruncate, false},
 	}
 	for _, tp := range tracepoints {
 		l, err := link.Tracepoint(tp.category, tp.name, tp.prog, nil)
 		if err != nil {
+			if tp.optional {
+				log.Printf("optional tracepoint %s/%s unavailable: %v", tp.category, tp.name, err)
+				continue
+			}
 			s.Close()
 			return nil, fmt.Errorf("attach tracepoint %s/%s: %w", tp.category, tp.name, err)
 		}
@@ -116,29 +122,35 @@ func New(policy config.Policy) (*Sensor, error) {
 	}
 
 	kprobes := []struct {
-		symbol string
-		prog   *ebpf.Program
+		symbol   string
+		prog     *ebpf.Program
+		optional bool
 	}{
-		{"__x64_sys_openat", objs.KpOverrideOpenat},
-		{"__x64_sys_openat2", objs.KpOverrideOpenat2},
-		{"__x64_sys_rename", objs.KpOverrideRename},
-		{"__x64_sys_renameat", objs.KpOverrideRenameat},
-		{"__x64_sys_renameat2", objs.KpOverrideRenameat2},
-		{"__x64_sys_unlink", objs.KpOverrideUnlink},
-		{"__x64_sys_unlinkat", objs.KpOverrideUnlinkat},
-		{"__x64_sys_truncate", objs.KpOverrideTruncate},
-		{"__x64_sys_ftruncate", objs.KpOverrideFtruncate},
-		{"__x64_sys_execve", objs.KpOverrideExecve},
-		{"__x64_sys_write", objs.KpOverrideWrite},
-		{"__x64_sys_pwrite64", objs.KpOverridePwrite64},
-		{"__x64_sys_writev", objs.KpOverrideWritev},
-		{"__x64_sys_copy_file_range", objs.KpOverrideCopyFileRange},
-		{"__x64_sys_getdents64", objs.KpOverrideGetdents64},
-		{"__x64_sys_mmap", objs.KpOverrideMmap},
+		{"__x64_sys_openat", objs.KpOverrideOpenat, false},
+		{"__x64_sys_openat2", objs.KpOverrideOpenat2, false},
+		{"__x64_sys_rename", objs.KpOverrideRename, false},
+		{"__x64_sys_renameat", objs.KpOverrideRenameat, false},
+		{"__x64_sys_renameat2", objs.KpOverrideRenameat2, false},
+		{"__x64_sys_unlink", objs.KpOverrideUnlink, false},
+		{"__x64_sys_unlinkat", objs.KpOverrideUnlinkat, false},
+		{"__x64_sys_truncate", objs.KpOverrideTruncate, false},
+		{"__x64_sys_ftruncate", objs.KpOverrideFtruncate, false},
+		{"__x64_sys_execve", objs.KpOverrideExecve, false},
+		{"__x64_sys_write", objs.KpOverrideWrite, false},
+		{"__x64_sys_pwrite64", objs.KpOverridePwrite64, false},
+		{"__x64_sys_writev", objs.KpOverrideWritev, false},
+		{"__x64_sys_copy_file_range", objs.KpOverrideCopyFileRange, false},
+		{"__x64_sys_getdents64", objs.KpOverrideGetdents64, false},
+		{"__x64_sys_mmap", objs.KpOverrideMmap, false},
+		{"__x64_sys_io_uring_enter", objs.KpOverrideIoUringEnter, true},
 	}
 	for _, kp := range kprobes {
 		l, err := link.Kprobe(kp.symbol, kp.prog, nil)
 		if err != nil {
+			if kp.optional {
+				log.Printf("optional override kprobe %s unavailable: %v", kp.symbol, err)
+				continue
+			}
 			s.Close()
 			return nil, fmt.Errorf("attach override kprobe %s: %w", kp.symbol, err)
 		}

@@ -19,6 +19,7 @@ const (
 	EventDup
 	EventScan
 	EventMmap
+	EventIOUring
 )
 
 const (
@@ -102,6 +103,8 @@ func (e Event) TypeName() string {
 		return "scan"
 	case EventMmap:
 		return "mmap"
+	case EventIOUring:
+		return "io_uring"
 	default:
 		return fmt.Sprintf("unknown(%d)", e.Type)
 	}

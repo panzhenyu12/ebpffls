@@ -22,7 +22,7 @@
 - BPF IOC 已从 yaml 同步到 map；path-based LSM IOC 已受 `protected_dirs` inode 作用域约束
 - blocked lineage exec 已做 kill 传播；`exec_after_blocked` 作为评分规则未实现
 - 仅 x86_64 kprobe；无 `bpf_override_return` 真 deny
-- 无 io_uring 类观测；mmap 与 getdents64 采样已覆盖
+- io_uring 已有基础 `io_uring_enter` 观测；不解析 SQE 内容，仍属于弱覆盖
 
 ---
 
@@ -93,7 +93,7 @@
 | 3.3 | kprobe 符号多架构（arm64 `__arm64_sys_*`）或 fentry 迁移 | 可移植 |
 | 3.4 | `bpf_override_return(-EPERM)` deny 路径与 kill 路径分离 | 真同步 deny |
 | 3.5 | `getdents64` 采样（可选阈值） | 已完成：目录 fd→path 评分与 kprobe kill |
-| 3.6 | io_uring 基础观测 | 新样本规避 |
+| 3.6 | io_uring 基础观测 | 已完成：`io_uring_enter` 采样，保护域活动后的 io_uring 行为计分；不解析 SQE |
 
 ---
 
@@ -114,7 +114,7 @@
 ```
 v0.2  Phase 1 完成 — 策略统一、write 闭环、fork 传播
 v0.3  Phase 2 完成 — 特征向量 + rules DSL
-v0.4  Phase 3 前半 — mmap/copy_file_range + 多 arch
+v0.4  Phase 3 前半 — mmap/copy_file_range/io_uring + 多 arch
 v0.5  Phase 3 后半 — deny override + scan 预警
 v1.0  Phase 4 核心 — 测试套件 + 自保护 + 文档稳定
 ```

@@ -44,7 +44,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 归一化事件 (struct event → agent.Event)
 ```
 
-**覆盖评估：** 核心文件变异调用约 85–92%；`write`/`pwrite64`/`writev`/`mmap`/`copy_file_range`/`getdents64` 已做 fd→path 评分，io_uring 仍是弱点。
+**覆盖评估：** 核心文件变异调用约 86–93%；`write`/`pwrite64`/`writev`/`mmap`/`copy_file_range`/`getdents64` 已做 fd→path 评分，io_uring 已有基础行为观测但不解析 SQE，仍是弱覆盖点。
 
 ---
 
@@ -59,7 +59,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 | fork 子进程逃逸 | 低 | exec_after_blocked 未实现 |
 | comm 伪装 trusted | 中 | 可配置 comm + exe 路径 + uid；默认策略已启用严格身份；backup_dirs 高危操作不被 trust 豁免 |
 | mmap | 中 | writable shared mmap fd→path 评分 |
-| io_uring | 无 | 未观测 |
+| io_uring | 低 | `io_uring_enter` 基础观测；保护域活动后计分，不解析 SQE |
 | 目录扫描 | 中 | getdents64 fd→path 评分 |
 
 ---
@@ -67,7 +67,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 ## 5. 已知代码缺口
 
 1. BPF IOC 已从 yaml 同步到 map，path-based LSM 硬规则已加 `protected_dirs` inode 作用域；硬拒绝仍依赖 active BPF LSM
-2. `EventWrite` 已基于 agent fd→path 缓存计分，且跟踪 close/dup/fcntl 复制、相对 dirfd 与空闲淘汰；mmap/io_uring 路径评分仍待补齐
+2. `EventWrite` 已基于 agent fd→path 缓存计分，且跟踪 close/dup/fcntl 复制、相对 dirfd 与空闲淘汰；mmap 已做 fd→path 评分，io_uring 当前仅做上下文关联计分
 3. kprobe 仅 `bpf_send_signal`，不 `bpf_override_return`
 4. kprobe 符号仅 x86_64
 5. `exec_after_blocked` 作为评分规则未实现；kill 传播已实现
@@ -116,3 +116,4 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 | 2026-06-09 | 完成 Phase 2.6：结构化 metrics 日志导出 alert/block/blacklist/drop 计数 |
 | 2026-06-09 | 完成 Phase 3.5：getdents64 目录扫描采样与阻断回归 |
 | 2026-06-09 | 完成 Phase 3.1：writable shared mmap 采样与阻断回归 |
+| 2026-06-09 | 完成 Phase 3.6：io_uring_enter 基础观测与集成回归 |

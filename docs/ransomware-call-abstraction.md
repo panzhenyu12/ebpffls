@@ -133,7 +133,7 @@ truncate(path, 0) 或 ftruncate(fd, 0)
 |--------|----------|--------|
 | `getdents64` / `stat` | `SO_SCAN` | P2 |
 | `mmap` + 写 | `SO_ENCRYPT_WRITE` | P1 |
-| `io_uring` 异步 I/O | 多种 | P2 |
+| `io_uring` 异步 I/O | 多种 | P2；当前已有 `io_uring_enter` 基础观测，不解析 SQE |
 | `link` / `symlink` | 逃避/替换 | P2 |
 | socket 系列 | 外传/C2 | P3（新子系统） |
 
@@ -179,7 +179,7 @@ semantic_rules:
 | 问题 | 答案 |
 |------|------|
 | 勒索调用能否抽象？ | **能**，分为语义操作 → 调用面 → 归一化事件 |
-| 当前版覆盖多少？ | 核心文件变异调用约 **82–90%**；write/pwrite64/writev/copy_file_range 已覆盖普通 fd 路径评分，close/dup 和相对 dirfd 生命周期已跟踪，但 mmap/io_uring 仍是弱点 |
+| 当前版覆盖多少？ | 核心文件变异调用约 **86–93%**；write/pwrite64/writev/copy_file_range/mmap/getdents64 已覆盖普通 fd 路径评分，close/dup 和相对 dirfd 生命周期已跟踪；io_uring 已有基础观测但不解析 SQE |
 | 下一步抽象重点？ | 扩展 `SO_ENCRYPT_WRITE` 调用面；统一 IOC 策略源；引入特征向量 |
 
 相关文档：[strategy.md](./strategy.md)、[roadmap.md](./roadmap.md)

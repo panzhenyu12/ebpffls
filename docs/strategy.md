@@ -33,13 +33,17 @@ syscalls map to semantic ransomware operations.
 | `openat` / `openat2` | Stage open | tracepoint exit | protected write-open; fd→path cache; relative dirfd resolution | kprobe; optional LSM |
 | `write` / `pwrite64` / `writev` | Encrypt in-place | tracepoint | protected/backup fd path when fd was observed | kprobe after mark; optional LSM |
 | `mmap` | Memory-mapped write | tracepoint | writable shared mmap on protected/backup fd when fd was observed | kprobe after mark |
+| `io_uring_enter` | Async I/O activity | tracepoint | low-confidence score after prior protected file activity | optional kprobe after mark |
 | `copy_file_range` | Copy into new file | tracepoint | protected/backup destination fd path when fd was observed | kprobe after mark |
 | `rename` / `renameat(2)` | Suffix replace | tracepoint | protected rename; protected suspicious suffix is immediate IOC | kprobe; optional LSM IOC |
 | `unlinkat` | Delete | tracepoint | protected/backup | kprobe; optional LSM |
 | `truncate` / `ftruncate` | Truncate | tracepoint | protected/backup; ftruncate uses fd→path cache | kprobe; optional LSM |
 | `getdents64` | Directory scan | tracepoint | protected/backup directory fd path when fd was observed | kprobe after mark |
 
-Gap: `io_uring` — see [roadmap.md](./roadmap.md).
+Current `io_uring` support is intentionally conservative: the BPF side observes
+`io_uring_enter`, but does not parse submission queue entries. The Go agent only
+scores it after the same process already touched protected files, which keeps it
+as a low-confidence evasion signal instead of a standalone block reason.
 
 ## Response levels
 
@@ -99,6 +103,7 @@ Within a sliding window (`window`, default 10s), per-TGID score includes:
 - write-open on protected or backup paths
 - write/pwrite64/writev syscalls on protected or backup file descriptors observed through open/openat/openat2
 - writable shared mmap on protected or backup file descriptors
+- io_uring_enter activity after prior protected file activity
 - copy_file_range to protected or backup file descriptors
 - truncate/ftruncate, rename, unlink on protected or backup paths
 - getdents64 directory scans on protected or backup file descriptors
