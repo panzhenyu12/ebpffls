@@ -124,6 +124,7 @@ Within a sliding window (`window`, default 10s), per-TGID score includes:
 - self-protect path tampering, which is not bypassed by trusted process identity
 - suspicious extensions and ransom note filenames on create
 - backup destruction bonus
+- exec_after_blocked lineage score when a blocked TGID or parent later execs
 - high-rate bonus when open/write event count ≥ 64
 
 When score ≥ `threshold` (default 45), the agent alerts and (unless dry-run)
@@ -166,7 +167,8 @@ Supported features are `distinct_paths`, `open_write_pairs`, and
 `rename_suffix_count`. Supported operators are `>`, `>=`, `==`, `<=`, and `<`.
 Rule action `block` is accepted as a policy-friendly alias for `deny`.
 
-**Not yet implemented:** `exec_after_blocked` as a score-only rule.
+Blocked lineage exec is enforced as kill outside dry-run and is also scored as
+`exec_after_blocked` for alert visibility.
 
 ## Architecture diagram
 

@@ -20,7 +20,7 @@
 - `write` 已基于 agent fd→path 缓存计分；close/dup 与相对 dirfd 已跟踪
 - `procState`、fd→path 与 blocked lineage 缓存已按空闲 TTL 定期淘汰；ringbuf reserve 失败已有内核计数和用户态增量日志
 - BPF IOC 已从 yaml 同步到 map；path-based LSM IOC 已受 `protected_dirs` inode 作用域约束
-- blocked lineage exec 已做 kill 传播；`exec_after_blocked` 作为评分规则未实现
+- blocked lineage exec 已做 kill 传播；dry-run/评分路径输出 `exec_after_blocked`
 - kprobe attach 已按架构选择候选符号；deny 动作已用 `bpf_override_return(-EPERM)` 同步拒绝
 - io_uring 已有基础 `io_uring_enter` 观测；不解析 SQE 内容，仍属于弱覆盖
 

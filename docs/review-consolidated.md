@@ -56,7 +56,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 | 已知 hash 样本 | 高 | 轨3 |
 | 保护域批量 open 改写 | 中 | 轨2→4 |
 | 零日原地 write 加密 | 中高 | 轨2 fd→path 评分覆盖 write/pwrite64/writev/copy_file_range；已标记后 kprobe 可补杀 |
-| fork 子进程逃逸 | 低 | exec_after_blocked 未实现 |
+| fork 子进程逃逸 | 中 | blocked lineage exec kill 传播；dry-run/评分路径输出 exec_after_blocked |
 | comm 伪装 trusted | 中 | 可配置 comm + exe 路径 + uid；默认策略已启用严格身份；backup_dirs 高危操作不被 trust 豁免 |
 | mmap | 中 | writable shared mmap fd→path 评分 |
 | io_uring | 低 | `io_uring_enter` 基础观测；保护域活动后计分，不解析 SQE |
@@ -70,7 +70,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 2. `EventWrite` 已基于 agent fd→path 缓存计分，且跟踪 close/dup/fcntl 复制、相对 dirfd 与空闲淘汰；mmap 已做 fd→path 评分，io_uring 当前仅做上下文关联计分
 3. deny 动作已用 kprobe `bpf_override_return(-EPERM)`；仍依赖内核 error injection allowlist
 4. kprobe 符号仅 x86_64
-5. `exec_after_blocked` 作为评分规则未实现；kill 传播已实现
+5. blocked lineage 已支持 kill 传播与 `exec_after_blocked` 评分输出
 6. Agent 无自保护
 
 ---

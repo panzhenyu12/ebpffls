@@ -1108,6 +1108,33 @@ PY
   stop_agent
 }
 
+test_exec_after_blocked_scores_in_dry_run() {
+  log "exec_after_blocked scores blocked lineage in dry-run"
+  local dir="${TMP_DIR}/lineage-score"
+  local bl="${TMP_DIR}/lineage-score-blacklist.txt"
+  local policy="${TMP_DIR}/lineage-score.yaml"
+  local agent_log="${TMP_DIR}/lineage-score-agent.log"
+  local sim="${TMP_DIR}/lineage-score.py"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" lineage-score-test 1 kill "${dir}" "${bl}" 30s
+  start_agent "${policy}" "${agent_log}" dry-run
+  cat >"${sim}" <<PY
+import os, time
+with open("${dir}/mark-parent.txt", "w") as f:
+    f.write("data")
+time.sleep(0.5)
+pid = os.fork()
+if pid == 0:
+    os.execv("/bin/true", ["/bin/true"])
+os.waitpid(pid, 0)
+time.sleep(0.5)
+PY
+  expect_survives "lineage dry-run score" python3 "${sim}"
+  wait_for_log "${agent_log}" 'exec after blocked lineage' "exec_after_blocked score"
+  stop_agent
+}
+
 test_rsync_trusted_false_positive_survives() {
   log "trusted rsync bulk copy does not alert or kill"
   command -v rsync >/dev/null || {
@@ -1299,6 +1326,7 @@ main() {
   test_hash_blacklist_exec_kills
   test_hash_blacklist_hot_scan_kills
   test_blocked_lineage_exec_kills_child
+  test_exec_after_blocked_scores_in_dry_run
   test_rsync_trusted_false_positive_survives
   test_make_workload_false_positive_survives
   test_self_protect_path_kills_even_when_trusted

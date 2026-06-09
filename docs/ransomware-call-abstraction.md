@@ -150,7 +150,7 @@ truncate(path, 0) 或 ftruncate(fd, 0)
 | **Rate** | events/s；write bytes/s | open_write > 30/10s |
 | **Lineage** | ppid；blocked 祖先；exe hash | parent_blocked → block child |
 
-当前实现已有 Scope（路径前缀）+ 部分 Pattern（扩展名/赎金信）+ 弱 Rate（open/write 计数），并对 blocked lineage 的 exec 做 kill 传播；完整 Lineage 特征仍未实现。
+当前实现已有 Scope（路径前缀）+ 部分 Pattern（扩展名/赎金信）+ 弱 Rate（open/write 计数），并对 blocked lineage 的 exec 做 kill 传播和 `exec_after_blocked` 评分；更完整的跨会话/跨 cgroup Lineage 仍待演进。
 
 ---
 

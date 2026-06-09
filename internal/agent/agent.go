@@ -197,7 +197,7 @@ func (a *Agent) handle(ev sensor.Event) {
 		return
 	}
 
-	if ev.Type == sensor.EventExec && (a.isBlocked(ev.TGID) || a.isBlocked(ev.PPID)) {
+	if ev.Type == sensor.EventExec && a.blockedLineage(ev) && !a.options.DryRun {
 		a.enforceTGID(ev.TGID, sensor.BlockActionKill, "exec by blocked lineage")
 		return
 	}
@@ -382,6 +382,10 @@ func (a *Agent) isBlocked(tgid uint32) bool {
 	defer a.blockedMu.RUnlock()
 	_, ok := a.blocked[tgid]
 	return ok
+}
+
+func (a *Agent) blockedLineage(ev sensor.Event) bool {
+	return a.isBlocked(ev.TGID) || a.isBlocked(ev.PPID)
 }
 
 func (a *Agent) rememberBlocked(tgid uint32) {
@@ -801,6 +805,9 @@ func (a *Agent) score(ev sensor.Event) (int, string) {
 
 	switch ev.Type {
 	case sensor.EventExec:
+		if a.blockedLineage(ev) {
+			return a.policy.Scores.ExecAfterBlocked, "exec after blocked lineage"
+		}
 		return 0, ""
 	case sensor.EventIOUring:
 		state := a.procs[ev.TGID]
@@ -979,6 +986,9 @@ func (a *Agent) alertAndEnforce(state *procState, reason string, action string) 
 	a.metrics.Alerts++
 
 	if a.options.DryRun || action == "log" {
+		if a.options.DryRun && action != "log" {
+			a.rememberBlocked(state.TGID)
+		}
 		return
 	}
 	a.metrics.Blocks++

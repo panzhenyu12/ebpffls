@@ -373,6 +373,26 @@ func TestScoreSelfProtectWriteOpen(t *testing.T) {
 	}
 }
 
+func TestScoreExecAfterBlockedLineage(t *testing.T) {
+	a := &Agent{
+		policy:  config.Policy{Scores: config.Scores{ExecAfterBlocked: 7}},
+		blocked: map[uint32]time.Time{100: time.Now()},
+	}
+
+	score, reason := a.score(sensor.Event{
+		Type: sensor.EventExec,
+		TGID: 200,
+		PPID: 100,
+	})
+
+	if score != 7 {
+		t.Fatalf("score = %d, want 7", score)
+	}
+	if reason != "exec after blocked lineage" {
+		t.Fatalf("reason = %q", reason)
+	}
+}
+
 func TestSelfProtectSensitiveEventBypassesTrustedExemption(t *testing.T) {
 	a := &Agent{
 		policy: config.Policy{
