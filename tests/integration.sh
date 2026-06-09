@@ -687,6 +687,52 @@ C
   stop_agent
 }
 
+test_network_egress_after_file_activity_scores() {
+  log "network egress after protected file activity scores and kills"
+  local dir="${TMP_DIR}/network-egress"
+  local bl="${TMP_DIR}/network-egress-blacklist.txt"
+  local policy="${TMP_DIR}/network-egress.yaml"
+  local agent_log="${TMP_DIR}/network-egress-agent.log"
+  local sim="${TMP_DIR}/network-egress.py"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" network-egress-test 6 kill "${dir}" "${bl}"
+  cat >>"${policy}" <<'YAML'
+network_egress:
+  enabled: true
+  score: 5
+  allowed_ports:
+    - 9
+YAML
+  start_agent "${policy}" "${agent_log}"
+  cat >"${sim}" <<PY
+import socket, threading, time
+
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server.bind(("127.0.0.1", 0))
+server.listen(1)
+port = server.getsockname()[1]
+
+def accept_once():
+    conn, _ = server.accept()
+    conn.close()
+    server.close()
+
+threading.Thread(target=accept_once, daemon=True).start()
+with open("${dir}/stage.txt", "w") as f:
+    f.write("data")
+time.sleep(0.2)
+client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+client.connect(("127.0.0.1", port))
+client.close()
+time.sleep(5)
+print("survived")
+PY
+  expect_killed "network egress scoring" python3 "${sim}"
+  wait_for_log "${agent_log}" 'network egress after suspicious activity' "network egress"
+  stop_agent
+}
+
 test_deny_override_rejects_marked_syscall() {
   log "deny action uses bpf_override_return for marked syscalls"
   local dir="${TMP_DIR}/deny-override"
@@ -1374,6 +1420,7 @@ main() {
   test_getdents64_scan_scores_and_kills
   test_writable_mmap_scores_and_kills
   test_io_uring_after_protected_activity_scores
+  test_network_egress_after_file_activity_scores
   test_deny_override_rejects_marked_syscall
   test_fd_write_path_scoring_kills
   test_fd_lifecycle_tracking

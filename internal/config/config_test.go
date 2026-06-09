@@ -76,6 +76,11 @@ suspicious_extensions:
   - .locked
 scores:
   write: 1
+network_egress:
+  enabled: true
+  score: 3
+  allowed_cidrs:
+    - 127.0.0.0/8
 rules:
   - name: base-rule
     feature: distinct_paths
@@ -97,6 +102,10 @@ ransom_note_names:
   - README.txt
 scores:
   write: 4
+network_egress:
+  score: 9
+  allowed_ports:
+    - 443
 rules:
   - name: overlay-rule
     feature: distinct_paths
@@ -125,6 +134,12 @@ rules:
 	}
 	if policy.Scores.Write != 4 {
 		t.Fatalf("write score = %d, want 4", policy.Scores.Write)
+	}
+	if !policy.NetworkEgress.Enabled || policy.NetworkEgress.Score != 9 {
+		t.Fatalf("network egress = %+v, want enabled score 9", policy.NetworkEgress)
+	}
+	if len(policy.NetworkEgress.AllowedCIDR) != 1 || len(policy.NetworkEgress.AllowedPort) != 1 {
+		t.Fatalf("network allowlists = %+v", policy.NetworkEgress)
 	}
 	if len(policy.Rules) != 2 || policy.Rules[1].Action != "deny" {
 		t.Fatalf("rules = %#v, want overlay block normalized to deny", policy.Rules)

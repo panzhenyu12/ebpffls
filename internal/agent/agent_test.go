@@ -377,6 +377,38 @@ func TestScoreIOUringRequiresPriorProtectedActivity(t *testing.T) {
 	}
 }
 
+func TestScoreNetworkEgressHonorsAllowlist(t *testing.T) {
+	a := &Agent{
+		policy: config.Policy{
+			NetworkEgress: config.NetworkEgress{
+				Enabled:     true,
+				Score:       6,
+				AllowedCIDR: []string{"127.0.0.0/8"},
+				AllowedPort: []int{443},
+			},
+		},
+		procs: map[uint32]*procState{
+			42: {Features: procFeatures{DistinctPaths: 1}},
+		},
+	}
+
+	score, reason := a.score(sensor.Event{Type: sensor.EventConnect, TGID: 42, Arg0: int32(0x08080808), Arg1: 4444})
+	if score != 6 {
+		t.Fatalf("score = %d, want 6", score)
+	}
+	if reason != "network egress after suspicious activity" {
+		t.Fatalf("reason = %q", reason)
+	}
+	score, _ = a.score(sensor.Event{Type: sensor.EventConnect, TGID: 42, Arg0: int32(0x0100007f), Arg1: 4444})
+	if score != 0 {
+		t.Fatalf("loopback score = %d, want 0", score)
+	}
+	score, _ = a.score(sensor.Event{Type: sensor.EventConnect, TGID: 42, Arg0: int32(0x08080808), Arg1: 443})
+	if score != 0 {
+		t.Fatalf("allowed port score = %d, want 0", score)
+	}
+}
+
 func TestScoreSelfProtectWriteOpen(t *testing.T) {
 	a := &Agent{
 		policy: config.Policy{

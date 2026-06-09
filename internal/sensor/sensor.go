@@ -72,6 +72,7 @@ func New(policy config.Policy) (*Sensor, error) {
 		{"syscalls", "sys_enter_getdents64", objs.TraceGetdents64, false},
 		{"syscalls", "sys_enter_mmap", objs.TraceMmap, false},
 		{"syscalls", "sys_enter_io_uring_enter", objs.TraceIoUringEnter, true},
+		{"syscalls", "sys_enter_connect", objs.TraceConnect, true},
 		{"syscalls", "sys_enter_close", objs.TraceClose, false},
 		{"syscalls", "sys_enter_dup", objs.TraceDup, false},
 		{"syscalls", "sys_exit_dup", objs.TraceDupExit, false},

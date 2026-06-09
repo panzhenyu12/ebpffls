@@ -23,6 +23,7 @@ type Scores struct {
 	Scan                int `yaml:"scan"`
 	Mmap                int `yaml:"mmap"`
 	IOUring             int `yaml:"io_uring"`
+	NetworkEgress       int `yaml:"network_egress"`
 }
 
 type Rule struct {
@@ -32,6 +33,13 @@ type Rule struct {
 	Value   int    `yaml:"value"`
 	Action  string `yaml:"action"`
 	Reason  string `yaml:"reason"`
+}
+
+type NetworkEgress struct {
+	Enabled     bool     `yaml:"enabled"`
+	Score       int      `yaml:"score"`
+	AllowedCIDR []string `yaml:"allowed_cidrs"`
+	AllowedPort []int    `yaml:"allowed_ports"`
 }
 
 type Policy struct {
@@ -56,6 +64,7 @@ type Policy struct {
 	BlacklistScanRaw     string        `yaml:"blacklist_scan"`
 	SuspiciousExtensions []string      `yaml:"suspicious_extensions"`
 	RansomNoteNames      []string      `yaml:"ransom_note_names"`
+	NetworkEgress        NetworkEgress `yaml:"network_egress"`
 	Scores               Scores        `yaml:"scores"`
 	Rules                []Rule        `yaml:"rules"`
 }
@@ -164,6 +173,12 @@ func normalize(p Policy) (Policy, error) {
 	if p.Scores.IOUring == 0 {
 		p.Scores.IOUring = 1
 	}
+	if p.Scores.NetworkEgress == 0 {
+		p.Scores.NetworkEgress = 5
+	}
+	if p.NetworkEgress.Score == 0 {
+		p.NetworkEgress.Score = p.Scores.NetworkEgress
+	}
 	for i := range p.Rules {
 		r := &p.Rules[i]
 		r.Feature = strings.ToLower(strings.TrimSpace(r.Feature))
@@ -226,8 +241,19 @@ func mergePolicies(policies []Policy) Policy {
 		merged.RansomNoteNames = append(merged.RansomNoteNames, p.RansomNoteNames...)
 		merged.Rules = append(merged.Rules, p.Rules...)
 		merged.Scores = mergeScores(merged.Scores, p.Scores)
+		merged.NetworkEgress = mergeNetworkEgress(merged.NetworkEgress, p.NetworkEgress)
 	}
 	return merged
+}
+
+func mergeNetworkEgress(base, override NetworkEgress) NetworkEgress {
+	base.Enabled = base.Enabled || override.Enabled
+	if override.Score != 0 {
+		base.Score = override.Score
+	}
+	base.AllowedCIDR = append(base.AllowedCIDR, override.AllowedCIDR...)
+	base.AllowedPort = append(base.AllowedPort, override.AllowedPort...)
+	return base
 }
 
 func mergeScores(base, override Scores) Scores {
@@ -269,6 +295,9 @@ func mergeScores(base, override Scores) Scores {
 	}
 	if override.IOUring != 0 {
 		base.IOUring = override.IOUring
+	}
+	if override.NetworkEgress != 0 {
+		base.NetworkEgress = override.NetworkEgress
 	}
 	return base
 }

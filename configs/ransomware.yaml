@@ -87,3 +87,12 @@ scores:
   scan: 1
   mmap: 3
   io_uring: 1
+  network_egress: 5
+network_egress:
+  enabled: false
+  score: 5
+  allowed_cidrs:
+    - 127.0.0.0/8
+    - ::1/128
+  allowed_ports:
+    - 53

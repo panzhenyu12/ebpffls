@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -822,6 +823,15 @@ func (a *Agent) score(ev sensor.Event) (int, string) {
 			return 0, ""
 		}
 		return a.policy.Scores.IOUring, "io_uring activity after protected file activity"
+	case sensor.EventConnect:
+		if !a.policy.NetworkEgress.Enabled || a.networkAllowed(ev) {
+			return 0, ""
+		}
+		state := a.procs[ev.TGID]
+		if state == nil || state.Features.DistinctPaths == 0 {
+			return 0, ""
+		}
+		return a.policy.NetworkEgress.Score, "network egress after suspicious activity"
 	case sensor.EventScan:
 		path = a.touchFD(ev.TGID, ev.Arg0, ev.Timestamp)
 		if path == "" {
@@ -1014,6 +1024,30 @@ func (a *Agent) inSelfProtectScope(path string) bool {
 	return hasDirPrefix(path, a.policy.SelfProtectPaths)
 }
 
+func (a *Agent) networkAllowed(ev sensor.Event) bool {
+	ip := eventIPv4(ev)
+	if !ip.IsValid() {
+		return true
+	}
+	port := int(ev.Arg1)
+	for _, allowed := range a.policy.NetworkEgress.AllowedPort {
+		if port == allowed {
+			return true
+		}
+	}
+	for _, cidr := range a.policy.NetworkEgress.AllowedCIDR {
+		prefix, err := netip.ParsePrefix(cidr)
+		if err == nil && prefix.Contains(ip) {
+			return true
+		}
+		addr, err := netip.ParseAddr(cidr)
+		if err == nil && addr == ip {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *Agent) inPolicyCgroup(tgid uint32) bool {
 	if len(a.policy.CgroupPaths) == 0 {
 		return true
@@ -1152,6 +1186,16 @@ func matchesCgroupPath(path string, candidates []string) bool {
 		}
 	}
 	return false
+}
+
+func eventIPv4(ev sensor.Event) netip.Addr {
+	raw := uint32(ev.Arg0)
+	return netip.AddrFrom4([4]byte{
+		byte(raw),
+		byte(raw >> 8),
+		byte(raw >> 16),
+		byte(raw >> 24),
+	})
 }
 
 func pickPath(ev sensor.Event) string {
