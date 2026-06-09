@@ -63,6 +63,32 @@ func TestMetricsSchemaFields(t *testing.T) {
 	}
 }
 
+func TestParseCgroupPath(t *testing.T) {
+	got := parseCgroupPath("0::/user.slice/session.scope\n")
+	if got != "/user.slice/session.scope" {
+		t.Fatalf("cgroup path = %q", got)
+	}
+}
+
+func TestMatchesCgroupPath(t *testing.T) {
+	if !matchesCgroupPath("/user.slice/session.scope", []string{"/user.slice"}) {
+		t.Fatal("expected cgroup prefix match")
+	}
+	if matchesCgroupPath("/system.slice/ssh.service", []string{"/user.slice"}) {
+		t.Fatal("unexpected cgroup match")
+	}
+}
+
+func TestProcInPolicyCgroup(t *testing.T) {
+	a := &Agent{policy: config.Policy{CgroupPaths: []string{"/allowed"}}}
+	if !a.procInPolicyCgroup(procInfo{Cgroup: "/allowed/app.scope"}) {
+		t.Fatal("expected proc in policy cgroup")
+	}
+	if a.procInPolicyCgroup(procInfo{Cgroup: "/other/app.scope"}) {
+		t.Fatal("unexpected proc in policy cgroup")
+	}
+}
+
 func TestPruneIdleRemovesOldProcFDAndBlockedState(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	old := now.Add(-2 * time.Minute)

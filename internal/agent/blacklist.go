@@ -23,11 +23,12 @@ type blacklist struct {
 }
 
 type procInfo struct {
-	PID  uint32
-	TGID uint32
-	UID  uint32
-	Comm string
-	Exe  string
+	PID    uint32
+	TGID   uint32
+	UID    uint32
+	Comm   string
+	Exe    string
+	Cgroup string
 }
 
 func newBlacklist(policy config.Policy) (*blacklist, error) {
@@ -154,10 +155,27 @@ func readProc(pid uint32) (procInfo, error) {
 	if err == nil {
 		info.Exe = exe
 	}
+	cgroup, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
+	if err == nil {
+		info.Cgroup = parseCgroupPath(string(cgroup))
+	}
 	if info.Comm == "" && info.Exe == "" {
 		return info, fmt.Errorf("read proc %d: no comm or exe", pid)
 	}
 	return info, nil
+}
+
+func parseCgroupPath(data string) string {
+	for _, line := range strings.Split(data, "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) == 3 {
+			return strings.TrimSpace(parts[2])
+		}
+	}
+	return ""
 }
 
 func listProcs() ([]procInfo, error) {

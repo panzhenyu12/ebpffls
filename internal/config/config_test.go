@@ -70,6 +70,8 @@ threshold: 100
 action: log
 protected_dirs:
   - /base
+cgroup_paths:
+  - /base.slice
 suspicious_extensions:
   - .locked
 scores:
@@ -89,6 +91,8 @@ threshold: 7
 action: kill
 protected_dirs:
   - /overlay
+cgroup_paths:
+  - /overlay.slice
 ransom_note_names:
   - README.txt
 scores:
@@ -115,6 +119,9 @@ rules:
 	}
 	if len(policy.ProtectedDirs) != 2 || policy.ProtectedDirs[0] != "/base" || policy.ProtectedDirs[1] != "/overlay" {
 		t.Fatalf("protected_dirs = %#v", policy.ProtectedDirs)
+	}
+	if len(policy.CgroupPaths) != 2 || policy.CgroupPaths[0] != "/base.slice" || policy.CgroupPaths[1] != "/overlay.slice" {
+		t.Fatalf("cgroup_paths = %#v", policy.CgroupPaths)
 	}
 	if policy.Scores.Write != 4 {
 		t.Fatalf("write score = %d, want 4", policy.Scores.Write)

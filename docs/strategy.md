@@ -112,6 +112,11 @@ one runtime policy: list fields such as `protected_dirs`, IOC names, blacklist
 files, and `rules` are appended, while scalar fields such as `threshold`,
 `action`, and score values use the later non-empty value.
 
+`cgroup_paths` can scope a merged policy to processes whose `/proc/<tgid>/cgroup`
+path matches one of the configured prefixes. This is currently enforced in the
+Go agent before scoring and blacklist scanning; a kernel-side cgroup map binding
+is still future work.
+
 Within a sliding window (`window`, default 10s), per-TGID score includes:
 
 - write-open on protected or backup paths

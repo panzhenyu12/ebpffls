@@ -193,6 +193,10 @@ func (a *Agent) handle(ev sensor.Event) {
 		return
 	}
 
+	if !a.inPolicyCgroup(ev.TGID) {
+		return
+	}
+
 	if a.isTrustedEvent(ev) && !a.backupSensitiveEvent(ev) && !a.selfProtectSensitiveEvent(ev) {
 		return
 	}
@@ -481,6 +485,9 @@ func (a *Agent) scanBlacklistOnce() {
 		return
 	}
 	for _, proc := range procs {
+		if !a.procInPolicyCgroup(proc) {
+			continue
+		}
 		if a.isTrustedProc(proc) {
 			continue
 		}
@@ -1007,6 +1014,24 @@ func (a *Agent) inSelfProtectScope(path string) bool {
 	return hasDirPrefix(path, a.policy.SelfProtectPaths)
 }
 
+func (a *Agent) inPolicyCgroup(tgid uint32) bool {
+	if len(a.policy.CgroupPaths) == 0 {
+		return true
+	}
+	info, err := readProc(tgid)
+	if err != nil {
+		return false
+	}
+	return a.procInPolicyCgroup(info)
+}
+
+func (a *Agent) procInPolicyCgroup(proc procInfo) bool {
+	if len(a.policy.CgroupPaths) == 0 {
+		return true
+	}
+	return matchesCgroupPath(proc.Cgroup, a.policy.CgroupPaths)
+}
+
 func (a *Agent) isTrustedEvent(ev sensor.Event) bool {
 	if !a.trustedComm(ev.Comm) {
 		return false
@@ -1102,6 +1127,26 @@ func matchesAnyPath(path string, candidates []string) bool {
 			continue
 		}
 		cleanCandidate := filepath.Clean(candidate)
+		if cleanPath == cleanCandidate || strings.HasPrefix(cleanPath, cleanCandidate+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesCgroupPath(path string, candidates []string) bool {
+	if path == "" {
+		return false
+	}
+	cleanPath := filepath.Clean(path)
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		cleanCandidate := filepath.Clean(candidate)
+		if cleanCandidate == "." {
+			cleanCandidate = "/"
+		}
 		if cleanPath == cleanCandidate || strings.HasPrefix(cleanPath, cleanCandidate+"/") {
 			return true
 		}

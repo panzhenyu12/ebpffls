@@ -75,6 +75,10 @@ list fields such as `protected_dirs` and override scalar defaults such as
 sudo ./bin/ebpffls monitor --config configs/ransomware.yaml --config team.yaml
 ```
 
+Set `cgroup_paths` in a policy to scope scoring and blacklist scanning to
+matching `/proc/<tgid>/cgroup` prefixes. Empty `cgroup_paths` means global
+coverage.
+
 Debug raw events:
 
 ```bash

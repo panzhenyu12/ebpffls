@@ -46,6 +46,7 @@ type Policy struct {
 	ProtectedDirs        []string      `yaml:"protected_dirs"`
 	BackupDirs           []string      `yaml:"backup_dirs"`
 	SelfProtectPaths     []string      `yaml:"self_protect_paths"`
+	CgroupPaths          []string      `yaml:"cgroup_paths"`
 	TrustedProcesses     []string      `yaml:"trusted_processes"`
 	TrustedExePaths      []string      `yaml:"trusted_exe_paths"`
 	TrustedUIDs          []uint32      `yaml:"trusted_uids"`
@@ -215,6 +216,7 @@ func mergePolicies(policies []Policy) Policy {
 		merged.ProtectedDirs = append(merged.ProtectedDirs, p.ProtectedDirs...)
 		merged.BackupDirs = append(merged.BackupDirs, p.BackupDirs...)
 		merged.SelfProtectPaths = append(merged.SelfProtectPaths, p.SelfProtectPaths...)
+		merged.CgroupPaths = append(merged.CgroupPaths, p.CgroupPaths...)
 		merged.TrustedProcesses = append(merged.TrustedProcesses, p.TrustedProcesses...)
 		merged.TrustedExePaths = append(merged.TrustedExePaths, p.TrustedExePaths...)
 		merged.TrustedUIDs = append(merged.TrustedUIDs, p.TrustedUIDs...)

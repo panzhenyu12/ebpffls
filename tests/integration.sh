@@ -187,6 +187,10 @@ wait_for_log_for() {
   fail "${name}: expected log pattern ${pattern}"
 }
 
+current_cgroup_path() {
+  awk -F: 'NF == 3 {print $3; exit}' /proc/self/cgroup
+}
+
 bpf_lsm_active() {
   [[ -r /sys/kernel/security/lsm ]] && grep -qw bpf /sys/kernel/security/lsm
 }
@@ -500,6 +504,62 @@ PY
   expect_killed "multi-config protected dir" python3 "${sim}"
   wait_for_log "${agent_log}" 'policy=multi-base-test+multi-overlay-test' "multi-config policy name"
   wait_for_log "${agent_log}" 'write-open in protected scope' "multi-config protected scoring"
+  stop_agent
+}
+
+test_cgroup_scope_filters_events() {
+  log "cgroup_paths scope filters policy events"
+  local dir="${TMP_DIR}/cgroup-scope"
+  local bl="${TMP_DIR}/cgroup-blacklist.txt"
+  local skip_policy="${TMP_DIR}/cgroup-skip.yaml"
+  local match_policy="${TMP_DIR}/cgroup-match.yaml"
+  local skip_log="${TMP_DIR}/cgroup-skip-agent.log"
+  local match_log="${TMP_DIR}/cgroup-match-agent.log"
+  local sim="${TMP_DIR}/cgroup-scope.py"
+  local cg
+  cg="$(current_cgroup_path)"
+  [[ -n "${cg}" ]] || fail "current cgroup path unavailable"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${skip_policy}" cgroup-skip-test 2 kill "${dir}" "${bl}"
+  cat >>"${skip_policy}" <<'YAML'
+cgroup_paths:
+  - /definitely-not-this-cgroup
+YAML
+  cat >"${sim}" <<PY
+import time
+base = "${dir}"
+for i in range(5):
+    with open(f"{base}/skip-{i}.txt", "w") as f:
+        f.write("data")
+    time.sleep(0.02)
+PY
+  start_agent "${skip_policy}" "${skip_log}"
+  expect_survives "cgroup scoped-out workload" python3 "${sim}"
+  sleep 0.5
+  if grep -q 'alert=' "${skip_log}"; then
+    cat "${skip_log}" >&2 || true
+    fail "cgroup scoped-out workload emitted alert"
+  fi
+  stop_agent
+
+  write_policy "${match_policy}" cgroup-match-test 2 kill "${dir}" "${bl}"
+  cat >>"${match_policy}" <<YAML
+cgroup_paths:
+  - ${cg}
+YAML
+  start_agent "${match_policy}" "${match_log}"
+  cat >"${sim}" <<PY
+import time
+base = "${dir}"
+for i in range(100):
+    with open(f"{base}/match-{i}.txt", "w") as f:
+        f.write("data")
+    time.sleep(0.02)
+print("survived")
+PY
+  expect_killed "cgroup scoped-in workload" python3 "${sim}"
+  wait_for_log "${match_log}" 'write-open in protected scope' "cgroup scoped-in scoring"
   stop_agent
 }
 
@@ -1310,6 +1370,7 @@ main() {
   test_feature_rule_distinct_paths_kills
   test_feature_rule_distinct_paths_blocks
   test_multi_config_merges_protected_dirs
+  test_cgroup_scope_filters_events
   test_getdents64_scan_scores_and_kills
   test_writable_mmap_scores_and_kills
   test_io_uring_after_protected_activity_scores
