@@ -64,6 +64,8 @@ protected_dirs:
   - ${protected_dir}
 backup_dirs:
   - ${protected_dir}/backup
+self_protect_paths:
+  - ${protected_dir}/self/ebpffls
 trusted_processes:
   - ebpffls
   - trustedbackup
@@ -89,6 +91,7 @@ scores:
   truncate: 6
   rename: 8
   unlink: 8
+  self_protect: 50
   suspicious_extension: 10
   ransom_note: 20
   backup_destroy: 20
@@ -195,6 +198,8 @@ block_ttl: 1m
 protected_dirs:
   - ${dir}
 backup_dirs: []
+self_protect_paths:
+  - ${dir}/self/ebpffls
 trusted_processes:
   - ebpffls
 blacklist_scan: 30s
@@ -210,6 +215,7 @@ scores:
   truncate: 6
   rename: 8
   unlink: 8
+  self_protect: 50
   suspicious_extension: 10
   ransom_note: 20
   backup_destroy: 20
@@ -1010,6 +1016,8 @@ block_ttl: 1m
 protected_dirs:
   - ${dir}
 backup_dirs: []
+self_protect_paths:
+  - ${dir}/self/ebpffls
 trusted_processes:
   - ebpffls
   - rsync
@@ -1030,6 +1038,7 @@ scores:
   truncate: 6
   rename: 8
   unlink: 8
+  self_protect: 50
   suspicious_extension: 10
   ransom_note: 20
   backup_destroy: 20
@@ -1081,6 +1090,71 @@ MK
   stop_agent
 }
 
+test_self_protect_path_kills_even_when_trusted() {
+  log "self-protect path tamper kills even trusted process"
+  local dir="${TMP_DIR}/self-protect"
+  local bl="${TMP_DIR}/self-protect-blacklist.txt"
+  local policy="${TMP_DIR}/self-protect.yaml"
+  local agent_log="${TMP_DIR}/self-protect-agent.log"
+  local sim="${TMP_DIR}/self-protect.py"
+  local protected_bin="${dir}/self/ebpffls"
+  mkdir -p "${dir}/self"
+  printf 'agent\n' >"${protected_bin}"
+  : >"${bl}"
+  cat >"${policy}" <<YAML
+name: self-protect-test
+window: 10s
+threshold: 10
+action: kill
+block_ttl: 1m
+protected_dirs:
+  - ${dir}/data
+backup_dirs: []
+self_protect_paths:
+  - ${protected_bin}
+trusted_processes:
+  - ebpffls
+  - python3
+trusted_exe_paths:
+  - /usr/bin
+  - /usr/local/bin
+trusted_uids:
+  - 0
+blacklist_scan: 30s
+blacklist_hashes: []
+blacklist_hash_files:
+  - ${bl}
+suspicious_extensions:
+  - .locked
+ransom_note_names:
+  - README_FOR_DECRYPT.txt
+scores:
+  write: 1
+  truncate: 6
+  rename: 8
+  unlink: 8
+  self_protect: 50
+  suspicious_extension: 10
+  ransom_note: 20
+  backup_destroy: 20
+  high_rate_bonus: 15
+  exec_after_blocked: 10
+  scan: 1
+  mmap: 3
+  io_uring: 1
+YAML
+  start_agent "${policy}" "${agent_log}"
+  cat >"${sim}" <<PY
+import time
+with open("${protected_bin}", "w") as f:
+    f.write("tamper")
+time.sleep(5)
+PY
+  expect_killed "self-protect path tamper" python3 "${sim}"
+  wait_for_log "${agent_log}" 'self-protect write-open' "self-protect"
+  stop_agent
+}
+
 main() {
   command -v cc >/dev/null || fail "cc is required for integration tests"
   [[ -x "${BIN}" ]] || fail "missing binary ${BIN}; run make build first"
@@ -1108,6 +1182,7 @@ main() {
   test_blocked_lineage_exec_kills_child
   test_rsync_trusted_false_positive_survives
   test_make_workload_false_positive_survives
+  test_self_protect_path_kills_even_when_trusted
   log "all integration tests passed"
 }
 

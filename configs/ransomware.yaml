@@ -16,6 +16,11 @@ backup_dirs:
   - /backups
   - /.snapshot
   - /var/backups
+self_protect_paths:
+  - /usr/local/bin/ebpffls
+  - /usr/bin/ebpffls
+  - /root/ebpffls/bin/ebpffls
+  - /etc/systemd/system/ebpffls.service
 trusted_processes:
   - ebpffls
   - apt
@@ -73,6 +78,7 @@ scores:
   truncate: 6
   rename: 8
   unlink: 8
+  self_protect: 50
   suspicious_extension: 10
   ransom_note: 20
   backup_destroy: 20

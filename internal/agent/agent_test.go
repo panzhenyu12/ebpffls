@@ -351,6 +351,43 @@ func TestScoreIOUringRequiresPriorProtectedActivity(t *testing.T) {
 	}
 }
 
+func TestScoreSelfProtectWriteOpen(t *testing.T) {
+	a := &Agent{
+		policy: config.Policy{
+			SelfProtectPaths: []string{"/opt/ebpffls/bin/ebpffls"},
+			Scores:           config.Scores{SelfProtect: 50},
+		},
+	}
+
+	score, reason := a.score(sensor.Event{
+		Type: sensor.EventOpen,
+		Arg0: 1,
+		Path: "/opt/ebpffls/bin/ebpffls",
+	})
+
+	if score != 50 {
+		t.Fatalf("score = %d, want 50", score)
+	}
+	if reason != "self-protect write-open" {
+		t.Fatalf("reason = %q", reason)
+	}
+}
+
+func TestSelfProtectSensitiveEventBypassesTrustedExemption(t *testing.T) {
+	a := &Agent{
+		policy: config.Policy{
+			SelfProtectPaths: []string{"/opt/ebpffls"},
+		},
+	}
+
+	if !a.selfProtectSensitiveEvent(sensor.Event{
+		Type: sensor.EventUnlink,
+		Path: "/opt/ebpffls/bin/ebpffls",
+	}) {
+		t.Fatal("expected self-protect unlink to be sensitive")
+	}
+}
+
 func TestMatchRuleReturnsFirstMatchingRule(t *testing.T) {
 	a := &Agent{
 		policy: config.Policy{

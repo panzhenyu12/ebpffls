@@ -193,7 +193,7 @@ func (a *Agent) handle(ev sensor.Event) {
 		return
 	}
 
-	if a.isTrustedEvent(ev) && !a.backupSensitiveEvent(ev) {
+	if a.isTrustedEvent(ev) && !a.backupSensitiveEvent(ev) && !a.selfProtectSensitiveEvent(ev) {
 		return
 	}
 
@@ -797,6 +797,7 @@ func (a *Agent) score(ev sensor.Event) (int, string) {
 	path := pickPath(ev)
 	protected := a.inProtectedScope(path)
 	backup := a.inBackupScope(path)
+	selfProtect := a.inSelfProtectScope(path)
 
 	switch ev.Type {
 	case sensor.EventExec:
@@ -823,6 +824,9 @@ func (a *Agent) score(ev sensor.Event) (int, string) {
 		if path == "" {
 			return 0, ""
 		}
+		if a.inSelfProtectScope(path) {
+			return a.policy.Scores.SelfProtect, "self-protect writable mmap"
+		}
 		if a.inBackupScope(path) {
 			return a.policy.Scores.Mmap + a.policy.Scores.BackupDestroy, "writable mmap on backup fd"
 		}
@@ -830,6 +834,9 @@ func (a *Agent) score(ev sensor.Event) (int, string) {
 			return a.policy.Scores.Mmap, "writable mmap in protected scope"
 		}
 	case sensor.EventOpen:
+		if selfProtect && isWriteOpen(ev.Arg0) {
+			return a.policy.Scores.SelfProtect, "self-protect write-open"
+		}
 		if !protected && !backup {
 			return 0, ""
 		}
@@ -847,6 +854,9 @@ func (a *Agent) score(ev sensor.Event) (int, string) {
 		if path == "" {
 			return 0, ""
 		}
+		if a.inSelfProtectScope(path) {
+			return a.policy.Scores.SelfProtect, "self-protect fd write"
+		}
 		if a.inBackupScope(path) {
 			return a.policy.Scores.Write + a.policy.Scores.BackupDestroy, "write syscall on backup fd"
 		}
@@ -854,6 +864,9 @@ func (a *Agent) score(ev sensor.Event) (int, string) {
 			return a.policy.Scores.Write, "write syscall on protected fd"
 		}
 	case sensor.EventRename:
+		if a.inSelfProtectScope(ev.Path) || a.inSelfProtectScope(ev.Path2) {
+			return a.policy.Scores.SelfProtect, "self-protect rename"
+		}
 		if a.inProtectedScope(ev.Path) || a.inProtectedScope(ev.Path2) || a.inBackupScope(ev.Path) || a.inBackupScope(ev.Path2) {
 			if a.hasSuspiciousExtension(ev.Path2) {
 				return a.policy.Scores.Rename + a.policy.Scores.SuspiciousExtension, "rename to suspicious extension"
@@ -861,6 +874,9 @@ func (a *Agent) score(ev sensor.Event) (int, string) {
 			return a.policy.Scores.Rename, "rename in protected scope"
 		}
 	case sensor.EventUnlink:
+		if selfProtect {
+			return a.policy.Scores.SelfProtect, "self-protect deletion"
+		}
 		if backup {
 			return a.policy.Scores.Unlink + a.policy.Scores.BackupDestroy, "backup deletion"
 		}
@@ -872,6 +888,13 @@ func (a *Agent) score(ev sensor.Event) (int, string) {
 			path = a.touchFD(ev.TGID, ev.Arg0, ev.Timestamp)
 			backup = a.inBackupScope(path)
 			protected = a.inProtectedScope(path)
+			selfProtect = a.inSelfProtectScope(path)
+		}
+		if selfProtect {
+			if ev.Path == "" {
+				return a.policy.Scores.SelfProtect, "self-protect fd truncation"
+			}
+			return a.policy.Scores.SelfProtect, "self-protect truncation"
 		}
 		if backup {
 			if ev.Path == "" {
@@ -903,6 +926,25 @@ func (a *Agent) backupSensitiveEvent(ev sensor.Event) bool {
 		return a.inBackupScope(ev.Path) || a.inBackupScope(ev.Path2)
 	case sensor.EventUnlink:
 		return a.inBackupScope(path)
+	default:
+		return false
+	}
+}
+
+func (a *Agent) selfProtectSensitiveEvent(ev sensor.Event) bool {
+	path := pickPath(ev)
+	switch ev.Type {
+	case sensor.EventOpen:
+		return isWriteOpen(ev.Arg0) && a.inSelfProtectScope(path)
+	case sensor.EventWrite, sensor.EventMmap, sensor.EventTruncate:
+		if path == "" {
+			path = a.touchFD(ev.TGID, ev.Arg0, ev.Timestamp)
+		}
+		return a.inSelfProtectScope(path)
+	case sensor.EventRename:
+		return a.inSelfProtectScope(ev.Path) || a.inSelfProtectScope(ev.Path2)
+	case sensor.EventUnlink:
+		return a.inSelfProtectScope(path)
 	default:
 		return false
 	}
@@ -949,6 +991,10 @@ func (a *Agent) inProtectedScope(path string) bool {
 
 func (a *Agent) inBackupScope(path string) bool {
 	return hasDirPrefix(path, a.policy.BackupDirs)
+}
+
+func (a *Agent) inSelfProtectScope(path string) bool {
+	return hasDirPrefix(path, a.policy.SelfProtectPaths)
 }
 
 func (a *Agent) isTrustedEvent(ev sensor.Event) bool {

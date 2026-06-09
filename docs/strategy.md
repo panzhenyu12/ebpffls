@@ -98,6 +98,13 @@ This blocks simple comm spoofing where malware renames itself to a trusted
 process name. Backup/snapshot destruction under `backup_dirs` is never skipped
 solely because the process is trusted.
 
+`self_protect_paths` defines agent binaries, service units, or deployment
+directories that should not be modified at runtime. Write-open, fd writes,
+rename, unlink, truncate/ftruncate, and writable mmap against those paths score
+with `scores.self_protect` even when the process otherwise matches the trusted
+identity model. This is the first self-protection layer; systemd watchdog and
+read-only deployment hardening remain deployment tasks.
+
 ## Policy model (behavior track)
 
 Within a sliding window (`window`, default 10s), per-TGID score includes:
@@ -109,6 +116,7 @@ Within a sliding window (`window`, default 10s), per-TGID score includes:
 - copy_file_range to protected or backup file descriptors
 - truncate/ftruncate, rename, unlink on protected or backup paths
 - getdents64 directory scans on protected or backup file descriptors
+- self-protect path tampering, which is not bypassed by trusted process identity
 - suspicious extensions and ransom note filenames on create
 - backup destruction bonus
 - high-rate bonus when open/write event count ≥ 64

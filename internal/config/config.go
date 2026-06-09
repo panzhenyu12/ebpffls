@@ -14,6 +14,7 @@ type Scores struct {
 	Truncate            int `yaml:"truncate"`
 	Rename              int `yaml:"rename"`
 	Unlink              int `yaml:"unlink"`
+	SelfProtect         int `yaml:"self_protect"`
 	SuspiciousExtension int `yaml:"suspicious_extension"`
 	RansomNote          int `yaml:"ransom_note"`
 	BackupDestroy       int `yaml:"backup_destroy"`
@@ -44,6 +45,7 @@ type Policy struct {
 	BlockTTLRaw          string        `yaml:"block_ttl"`
 	ProtectedDirs        []string      `yaml:"protected_dirs"`
 	BackupDirs           []string      `yaml:"backup_dirs"`
+	SelfProtectPaths     []string      `yaml:"self_protect_paths"`
 	TrustedProcesses     []string      `yaml:"trusted_processes"`
 	TrustedExePaths      []string      `yaml:"trusted_exe_paths"`
 	TrustedUIDs          []uint32      `yaml:"trusted_uids"`
@@ -105,6 +107,9 @@ func Load(path string) (Policy, error) {
 	}
 	if p.Scores.Unlink == 0 {
 		p.Scores.Unlink = 8
+	}
+	if p.Scores.SelfProtect == 0 {
+		p.Scores.SelfProtect = 50
 	}
 	if p.Scores.SuspiciousExtension == 0 {
 		p.Scores.SuspiciousExtension = 10

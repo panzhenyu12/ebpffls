@@ -101,7 +101,7 @@
 
 | ID | 任务 |
 |----|------|
-| 4.1 | Agent 自保护：systemd 看门狗、只读部署、保护自身路径 |
+| 4.1 | Agent 自保护：systemd 看门狗、只读部署、保护自身路径 | 已开始：`self_protect_paths` 篡改评分与 trusted 不豁免回归 |
 | 4.2 | 集成测试套件：勒索模拟脚本 + 误报场景（make -j、rsync backup） | 已开始：新增 trusted rsync 与 make -j 误报回归 |
 | 4.3 | 多策略 / cgroup 绑定 |
 | 4.4 | SIEM 出口（alert JSON schema 稳定化） | 已完成：alert/metrics 增加 `schema_version:"v1"` 与 `kind` |
