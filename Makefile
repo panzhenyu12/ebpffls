@@ -19,6 +19,7 @@ build: generate
 
 test: generate
 	$(GO) test ./...
+	bash tests/systemd_unit.sh
 
 integration-test: build test
 	bash tests/integration.sh

@@ -81,6 +81,20 @@ Debug raw events:
 sudo ./bin/ebpffls monitor --config configs/ransomware.yaml --debug-events
 ```
 
+## systemd
+
+A hardened unit template is available at `deploy/systemd/ebpffls.service`.
+Typical deployment:
+
+```bash
+sudo install -m 0755 bin/ebpffls /usr/local/bin/ebpffls
+sudo install -d -m 0755 /etc/ebpffls /var/lib/ebpffls
+sudo install -m 0644 configs/ransomware.yaml /etc/ebpffls/ransomware.yaml
+sudo install -m 0644 deploy/systemd/ebpffls.service /etc/systemd/system/ebpffls.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now ebpffls
+```
+
 ## Defaults
 
 | Setting | Value | Notes |
