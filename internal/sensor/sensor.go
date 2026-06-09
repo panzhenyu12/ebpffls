@@ -154,6 +154,14 @@ func (s *Sensor) UnblockTGID(tgid uint32) error {
 	return s.objects.BlockedTgids.Delete(tgid)
 }
 
+func (s *Sensor) RingbufDrops() (uint64, error) {
+	var drops uint64
+	if err := s.objects.RingbufDrops.Lookup(uint32(0), &drops); err != nil {
+		return 0, err
+	}
+	return drops, nil
+}
+
 func (s *Sensor) Events(ctx context.Context) (<-chan Event, <-chan error) {
 	events := make(chan Event, 1024)
 	errs := make(chan error, 1)

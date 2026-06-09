@@ -98,11 +98,14 @@ Within a sliding window (`window`, default 10s), per-TGID score includes:
 When score ≥ `threshold` (default 45), the agent alerts and (unless dry-run)
 writes the TGID into `blocked_tgids`.
 
-**Partially implemented:** blocked lineage exec is re-blocked as a kill action.
+Blocked lineage exec is re-blocked as a kill action. fd path-aware scoring for
+write/pwrite64/writev/ftruncate uses an agent fd→path cache. The cache tracks
+close, dup/fcntl duplication, and relative openat/openat2 dirfd resolution.
 
-**Partially implemented:** fd path-aware scoring for write/pwrite64/writev/ftruncate uses an agent
-fd→path cache. The cache tracks close, dup/fcntl duplication, and relative
-openat/openat2 dirfd resolution.
+Long-running state is bounded: `procState`, fd→path entries, and userspace
+blocked-lineage memory are pruned after an idle TTL derived from `window` and
+`block_ttl`. Ring buffer reserve failures are counted in BPF and logged by the
+agent as increasing `ringbuf_drops` totals.
 
 **Not yet implemented:** `exec_after_blocked` as a score-only rule, yaml-driven BPF IOC maps.
 

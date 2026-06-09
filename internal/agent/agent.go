@@ -27,12 +27,13 @@ type Agent struct {
 	options   Options
 	procs     map[uint32]*procState
 	fdMu      sync.RWMutex
-	fdPaths   map[fdKey]string
+	fdPaths   map[fdKey]fdState
 	blockedMu sync.RWMutex
-	blocked   map[uint32]struct{}
+	blocked   map[uint32]time.Time
 	blacklist *blacklist
 	hashes    *hashCache
 	hashQueue chan hashJob
+	lastDrops uint64
 }
 
 type hashJob struct {
@@ -48,6 +49,11 @@ type hashJob struct {
 type fdKey struct {
 	TGID uint32
 	FD   int32
+}
+
+type fdState struct {
+	Path     string
+	LastSeen time.Time
 }
 
 type procState struct {
@@ -102,8 +108,8 @@ func New(policy config.Policy, s *sensor.Sensor, options Options) *Agent {
 		sensor:    s,
 		options:   options,
 		procs:     make(map[uint32]*procState),
-		fdPaths:   make(map[fdKey]string),
-		blocked:   make(map[uint32]struct{}),
+		fdPaths:   make(map[fdKey]fdState),
+		blocked:   make(map[uint32]time.Time),
 		blacklist: bl,
 		hashes:    newHashCache(),
 		hashQueue: make(chan hashJob, 1024),
@@ -112,6 +118,10 @@ func New(policy config.Policy, s *sensor.Sensor, options Options) *Agent {
 
 func (a *Agent) Run(ctx context.Context) error {
 	events, errs := a.sensor.Events(ctx)
+	pruneTicker := time.NewTicker(a.pruneInterval())
+	dropTicker := time.NewTicker(a.ringbufDropInterval())
+	defer pruneTicker.Stop()
+	defer dropTicker.Stop()
 	if a.blacklist != nil {
 		go a.hashWorker(ctx)
 		go a.scanBlacklist(ctx)
@@ -129,6 +139,10 @@ func (a *Agent) Run(ctx context.Context) error {
 				return nil
 			}
 			a.handle(ev)
+		case <-pruneTicker.C:
+			a.pruneIdle(time.Now())
+		case <-dropTicker.C:
+			a.logRingbufDrops()
 		}
 	}
 }
@@ -219,7 +233,7 @@ func (a *Agent) updateFD(ev *sensor.Event) bool {
 		}
 		path := a.resolveOpenPath(*ev)
 		a.fdMu.Lock()
-		a.fdPaths[fdKey{TGID: ev.TGID, FD: ev.Arg1}] = path
+		a.fdPaths[fdKey{TGID: ev.TGID, FD: ev.Arg1}] = fdState{Path: path, LastSeen: ev.Timestamp}
 		a.fdMu.Unlock()
 		ev.Path = path
 		return false
@@ -233,8 +247,9 @@ func (a *Agent) updateFD(ev *sensor.Event) bool {
 			return true
 		}
 		a.fdMu.Lock()
-		if path := a.fdPaths[fdKey{TGID: ev.TGID, FD: ev.Arg0}]; path != "" {
-			a.fdPaths[fdKey{TGID: ev.TGID, FD: ev.Arg1}] = path
+		if state := a.fdPaths[fdKey{TGID: ev.TGID, FD: ev.Arg0}]; state.Path != "" {
+			state.LastSeen = ev.Timestamp
+			a.fdPaths[fdKey{TGID: ev.TGID, FD: ev.Arg1}] = state
 		} else {
 			delete(a.fdPaths, fdKey{TGID: ev.TGID, FD: ev.Arg1})
 		}
@@ -262,9 +277,21 @@ func (a *Agent) resolveOpenPath(ev sensor.Event) string {
 
 func (a *Agent) fdPath(tgid uint32, fd int32) string {
 	a.fdMu.RLock()
-	path := a.fdPaths[fdKey{TGID: tgid, FD: fd}]
+	path := a.fdPaths[fdKey{TGID: tgid, FD: fd}].Path
 	a.fdMu.RUnlock()
 	return path
+}
+
+func (a *Agent) touchFD(tgid uint32, fd int32, seen time.Time) string {
+	a.fdMu.Lock()
+	key := fdKey{TGID: tgid, FD: fd}
+	state := a.fdPaths[key]
+	if state.Path != "" {
+		state.LastSeen = seen
+		a.fdPaths[key] = state
+	}
+	a.fdMu.Unlock()
+	return state.Path
 }
 
 func (a *Agent) immediateIOC(ev sensor.Event) string {
@@ -316,7 +343,7 @@ func (a *Agent) isBlocked(tgid uint32) bool {
 
 func (a *Agent) rememberBlocked(tgid uint32) {
 	a.blockedMu.Lock()
-	a.blocked[tgid] = struct{}{}
+	a.blocked[tgid] = time.Now()
 	a.blockedMu.Unlock()
 }
 
@@ -479,6 +506,102 @@ func (a *Agent) prune(state *procState, now time.Time) {
 	state.FirstSeen = now
 }
 
+func (a *Agent) pruneInterval() time.Duration {
+	ttl := a.idleTTL()
+	interval := ttl / 2
+	if interval < time.Second {
+		return time.Second
+	}
+	if interval > time.Minute {
+		return time.Minute
+	}
+	return interval
+}
+
+func (a *Agent) idleTTL() time.Duration {
+	ttl := a.policy.Window * 3
+	if ttl < time.Minute {
+		ttl = time.Minute
+	}
+	if a.policy.BlockTTL > ttl {
+		ttl = a.policy.BlockTTL
+	}
+	return ttl
+}
+
+func (a *Agent) ringbufDropInterval() time.Duration {
+	interval := a.policy.Window
+	if interval <= 0 {
+		return 30 * time.Second
+	}
+	if interval < 5*time.Second {
+		return 5 * time.Second
+	}
+	if interval > time.Minute {
+		return time.Minute
+	}
+	return interval
+}
+
+func (a *Agent) pruneIdle(now time.Time) {
+	ttl := a.idleTTL()
+	for tgid, state := range a.procs {
+		if state.LastSeen.IsZero() || now.Sub(state.LastSeen) <= ttl {
+			continue
+		}
+		delete(a.procs, tgid)
+	}
+
+	a.fdMu.Lock()
+	for key, state := range a.fdPaths {
+		if state.LastSeen.IsZero() || now.Sub(state.LastSeen) <= ttl {
+			continue
+		}
+		delete(a.fdPaths, key)
+	}
+	a.fdMu.Unlock()
+
+	a.blockedMu.Lock()
+	for tgid, seen := range a.blocked {
+		if seen.IsZero() {
+			if state := a.procs[tgid]; state != nil {
+				seen = state.LastSeen
+			}
+		}
+		if seen.IsZero() || now.Sub(seen) <= ttl {
+			continue
+		}
+		delete(a.blocked, tgid)
+	}
+	a.blockedMu.Unlock()
+}
+
+func (a *Agent) logRingbufDrops() {
+	if a.sensor == nil {
+		return
+	}
+	drops, err := a.sensor.RingbufDrops()
+	if err != nil {
+		if a.options.DebugEvents {
+			log.Printf("failed to read ringbuf drop counter: %v", err)
+		}
+		return
+	}
+	delta := a.ringbufDropDelta(drops)
+	if delta > 0 {
+		log.Printf("ringbuf_drops total=%d delta=%d", drops, delta)
+	}
+}
+
+func (a *Agent) ringbufDropDelta(current uint64) uint64 {
+	previous := a.lastDrops
+	a.lastDrops = current
+	if current < previous {
+		return current
+	}
+	return current - previous
+}
+
 func (a *Agent) score(ev sensor.Event) (int, string) {
 	path := pickPath(ev)
 	protected := a.inProtectedScope(path)
@@ -501,7 +624,7 @@ func (a *Agent) score(ev sensor.Event) (int, string) {
 			return a.policy.Scores.Write, "write-open in protected scope"
 		}
 	case sensor.EventWrite:
-		path = a.fdPath(ev.TGID, ev.Arg0)
+		path = a.touchFD(ev.TGID, ev.Arg0, ev.Timestamp)
 		if path == "" {
 			return 0, ""
 		}
@@ -527,7 +650,7 @@ func (a *Agent) score(ev sensor.Event) (int, string) {
 		}
 	case sensor.EventTruncate:
 		if path == "" {
-			path = a.fdPath(ev.TGID, ev.Arg0)
+			path = a.touchFD(ev.TGID, ev.Arg0, ev.Timestamp)
 			backup = a.inBackupScope(path)
 			protected = a.inProtectedScope(path)
 		}
@@ -554,7 +677,7 @@ func (a *Agent) backupSensitiveEvent(ev sensor.Event) bool {
 		return isWriteOpen(ev.Arg0) && a.inBackupScope(path)
 	case sensor.EventWrite, sensor.EventTruncate:
 		if path == "" {
-			path = a.fdPath(ev.TGID, ev.Arg0)
+			path = a.touchFD(ev.TGID, ev.Arg0, ev.Timestamp)
 		}
 		return a.inBackupScope(path)
 	case sensor.EventRename:

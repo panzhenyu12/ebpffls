@@ -23,6 +23,13 @@ struct {
 } events SEC(".maps");
 
 struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, __u64);
+} ringbuf_drops SEC(".maps");
+
+struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 16384);
 	__type(key, __u32);
@@ -61,6 +68,15 @@ static __always_inline __u32 current_ppid(void)
 	return BPF_CORE_READ(parent, tgid);
 }
 
+static __always_inline void count_ringbuf_drop(void)
+{
+	__u32 key = 0;
+	__u64 *drops = bpf_map_lookup_elem(&ringbuf_drops, &key);
+
+	if (drops)
+		__sync_fetch_and_add(drops, 1);
+}
+
 static __always_inline struct event *new_event(__u32 type)
 {
 	struct event *e;
@@ -68,8 +84,10 @@ static __always_inline struct event *new_event(__u32 type)
 	__u64 uid_gid = bpf_get_current_uid_gid();
 
 	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-	if (!e)
+	if (!e) {
+		count_ringbuf_drop();
 		return 0;
+	}
 
 	e->ts_ns = bpf_ktime_get_ns();
 	e->pid = (__u32)pid_tgid;

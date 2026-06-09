@@ -1,6 +1,6 @@
 # 开发路线图
 
-> 更新：2026-06-08  
+> 更新：2026-06-09  
 > 基于当前四轨架构与 [调用抽象](./ransomware-call-abstraction.md)
 
 ---
@@ -18,6 +18,7 @@
 
 - 文档曾与代码不一致（已在本次更新中对齐）
 - `write` 已基于 agent fd→path 缓存计分；close/dup 与相对 dirfd 已跟踪
+- `procState`、fd→path 与 blocked lineage 缓存已按空闲 TTL 定期淘汰；ringbuf reserve 失败已有内核计数和用户态增量日志
 - BPF IOC 与 yaml 不同步；硬规则无 `protected_dirs` 作用域
 - blocked lineage exec 已做 kill 传播；`exec_after_blocked` 作为评分规则未实现
 - 仅 x86_64 kprobe；无 `bpf_override_return` 真 deny
@@ -37,7 +38,7 @@
 | 1.4 | 恢复 `EventWrite` 路径感知评分（fd→path 缓存或 BPF 带 path） | 已完成：open/openat/openat2 fd→path 缓存 | P0 |
 | 1.5 | 高置信语义规则即时 `BlockTGID`：保护域 +（赎金信 \| 可疑后缀 rename） | 已完成 | P0 |
 | 1.6 | 实现 blocked lineage exec 传播：blocked TGID/父 TGID 再 exec → 新 TGID 入 map | 已完成 kill 传播 | P1 |
-| 1.7 | `procState` 定期淘汰；ringbuf 丢事件计数日志 | 稳定性 | P1 |
+| 1.7 | `procState` 定期淘汰；ringbuf 丢事件计数日志 | 已完成：空闲状态淘汰 + BPF drop counter + Go 增量日志 | P1 |
 
 ### Phase 1 验收标准
 
@@ -51,6 +52,8 @@
 - [x] openat/openat2 相对 dirfd 可解析到保护域路径并触发评分
 - [x] copy_file_range 写入保护域目标 fd 可通过 fd→path 评分触发阻断
 - [x] 父进程 blocked 后 exec 子进程，子进程被 kill 传播阻断
+- [x] `procState`、fd→path、blocked lineage 用户态状态按 TTL 淘汰，避免长期运行内存无界增长
+- [x] ringbuf reserve 失败在 BPF map 中计数，Go agent 周期读取并打印增量日志
 - [x] 集成测试覆盖 dry-run、行为阈值、即时 IOC、unlink/truncate、hash 黑名单、热更新扫描、blocked lineage exec
 
 ---

@@ -20,7 +20,7 @@ Four complementary defense tracks:
 Components:
 
 - **eBPF sensor** — tracepoints, optional BPF LSM hooks, kprobes on sensitive syscalls
-- **Go agent** — ring buffer reader, sliding-window scoring, blacklist scanner
+- **Go agent** — ring buffer reader, sliding-window scoring, blacklist scanner, bounded process/fd state caches
 - **Policy** — YAML configuration (`configs/ransomware.yaml`)
 
 For syscall-to-semantics mapping see [docs/ransomware-call-abstraction.md](docs/ransomware-call-abstraction.md).
@@ -80,6 +80,9 @@ sudo ./bin/ebpffls monitor --config configs/ransomware.yaml --debug-events
 | CLI `--dry-run` | `true` | enforcement off until explicitly disabled |
 | `threshold` | `45` | behavior score in 10s window |
 | `block_ttl` | `10m` | marked TGID expiry |
+
+The BPF sensor counts ring buffer reserve failures in a map, and the agent logs
+`ringbuf_drops total=<n> delta=<n>` when drops increase.
 
 ## Policy model (behavior track)
 

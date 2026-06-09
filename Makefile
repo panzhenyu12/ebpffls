@@ -1,7 +1,7 @@
 BINARY ?= ebpffls
 GO ?= go
 
-.PHONY: all generate build integration-test clean bpftool
+.PHONY: all generate build test integration-test clean bpftool
 
 all: build
 
@@ -17,7 +17,10 @@ generate: bpf/vmlinux.h
 build: generate
 	$(GO) build -o bin/$(BINARY) ./cmd/ebpffls
 
-integration-test: build
+test: generate
+	$(GO) test ./...
+
+integration-test: build test
 	bash tests/integration.sh
 
 clean:
