@@ -71,6 +71,15 @@ type procState struct {
 	Reasons        []string
 	RecentEvents   []scoredEvent
 	HighRateScored bool
+	Features       procFeatures
+	seenPaths      map[string]struct{}
+	openWritePaths map[string]struct{}
+}
+
+type procFeatures struct {
+	DistinctPaths     int `json:"distinct_paths"`
+	OpenWritePairs    int `json:"open_write_pairs"`
+	RenameSuffixCount int `json:"rename_suffix_count"`
 }
 
 type scoredEvent struct {
@@ -95,6 +104,7 @@ type alert struct {
 	Score     int           `json:"score"`
 	Threshold int           `json:"threshold"`
 	Reasons   []string      `json:"reasons"`
+	Features  procFeatures  `json:"features"`
 	Events    []scoredEvent `json:"events"`
 }
 
@@ -199,6 +209,7 @@ func (a *Agent) handle(ev sensor.Event) {
 
 	state := a.state(ev)
 	a.prune(state, ev.Timestamp)
+	a.recordFeatures(state, ev)
 	state.Score += score
 	state.EventCount++
 	if ev.Type == sensor.EventWrite || ev.Type == sensor.EventOpen {
@@ -483,6 +494,7 @@ func (a *Agent) state(ev sensor.Event) *procState {
 			TGID:      ev.TGID,
 			FirstSeen: ev.Timestamp,
 		}
+		state.initFeatureMaps()
 		a.procs[ev.TGID] = state
 	}
 	state.PID = ev.PID
@@ -503,7 +515,60 @@ func (a *Agent) prune(state *procState, now time.Time) {
 	state.Reasons = nil
 	state.RecentEvents = nil
 	state.HighRateScored = false
+	state.Features = procFeatures{}
+	state.seenPaths = nil
+	state.openWritePaths = nil
+	state.initFeatureMaps()
 	state.FirstSeen = now
+}
+
+func (state *procState) initFeatureMaps() {
+	if state.seenPaths == nil {
+		state.seenPaths = make(map[string]struct{})
+	}
+	if state.openWritePaths == nil {
+		state.openWritePaths = make(map[string]struct{})
+	}
+}
+
+func (a *Agent) recordFeatures(state *procState, ev sensor.Event) {
+	state.initFeatureMaps()
+	for _, path := range a.featurePaths(ev) {
+		if path == "" {
+			continue
+		}
+		state.seenPaths[path] = struct{}{}
+	}
+	if ev.Type == sensor.EventOpen && isWriteOpen(ev.Arg0) && ev.Path != "" {
+		state.openWritePaths[ev.Path] = struct{}{}
+	}
+	if ev.Type == sensor.EventRename && a.hasSuspiciousExtension(ev.Path2) {
+		state.Features.RenameSuffixCount++
+	}
+	state.Features.DistinctPaths = len(state.seenPaths)
+	state.Features.OpenWritePairs = len(state.openWritePaths)
+}
+
+func (a *Agent) featurePaths(ev sensor.Event) []string {
+	switch ev.Type {
+	case sensor.EventWrite:
+		if path := a.fdPath(ev.TGID, ev.Arg0); path != "" {
+			return []string{path}
+		}
+	case sensor.EventTruncate:
+		if ev.Path != "" {
+			return []string{ev.Path}
+		}
+		if path := a.fdPath(ev.TGID, ev.Arg0); path != "" {
+			return []string{path}
+		}
+	case sensor.EventRename:
+		return []string{ev.Path, ev.Path2}
+	}
+	if path := pickPath(ev); path != "" {
+		return []string{path}
+	}
+	return nil
 }
 
 func (a *Agent) pruneInterval() time.Duration {
@@ -712,6 +777,7 @@ func (a *Agent) alertAndEnforce(state *procState, reason string, action uint32) 
 		Score:     state.Score,
 		Threshold: a.policy.Threshold,
 		Reasons:   state.Reasons,
+		Features:  state.Features,
 		Events:    state.RecentEvents,
 	}
 	data, _ := json.Marshal(al)

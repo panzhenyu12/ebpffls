@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/panzhenyu/ebpffls/internal/config"
+	"github.com/panzhenyu/ebpffls/internal/sensor"
 )
 
 func TestPruneIdleRemovesOldProcFDAndBlockedState(t *testing.T) {
@@ -108,5 +109,67 @@ func TestRingbufDropDeltaReportsOnlyIncrements(t *testing.T) {
 	}
 	if delta := a.ringbufDropDelta(2); delta != 2 {
 		t.Fatalf("reset delta = %d, want 2", delta)
+	}
+}
+
+func TestRecordFeaturesTracksDistinctOpenWriteAndRenameSuffix(t *testing.T) {
+	a := &Agent{
+		policy: config.Policy{
+			SuspiciousExtensions: []string{".locked"},
+		},
+	}
+	state := &procState{}
+
+	a.recordFeatures(state, sensor.Event{
+		Type: sensor.EventOpen,
+		Arg0: 1,
+		Path: "/protected/a.txt",
+	})
+	a.recordFeatures(state, sensor.Event{
+		Type:  sensor.EventRename,
+		Path:  "/protected/a.txt",
+		Path2: "/protected/a.txt.locked",
+	})
+
+	if state.Features.DistinctPaths != 2 {
+		t.Fatalf("DistinctPaths = %d, want 2", state.Features.DistinctPaths)
+	}
+	if state.Features.OpenWritePairs != 1 {
+		t.Fatalf("OpenWritePairs = %d, want 1", state.Features.OpenWritePairs)
+	}
+	if state.Features.RenameSuffixCount != 1 {
+		t.Fatalf("RenameSuffixCount = %d, want 1", state.Features.RenameSuffixCount)
+	}
+}
+
+func TestPruneResetsFeatures(t *testing.T) {
+	a := &Agent{
+		policy: config.Policy{Window: time.Second},
+	}
+	state := &procState{
+		FirstSeen: time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC),
+		Features: procFeatures{
+			DistinctPaths:     3,
+			OpenWritePairs:    2,
+			RenameSuffixCount: 1,
+		},
+		seenPaths: map[string]struct{}{
+			"/protected/a": {},
+		},
+		openWritePaths: map[string]struct{}{
+			"/protected/a": {},
+		},
+	}
+
+	a.prune(state, state.FirstSeen.Add(2*time.Second))
+
+	if state.Features != (procFeatures{}) {
+		t.Fatalf("features = %+v, want zero", state.Features)
+	}
+	if len(state.seenPaths) != 0 {
+		t.Fatalf("seenPaths len = %d, want 0", len(state.seenPaths))
+	}
+	if len(state.openWritePaths) != 0 {
+		t.Fatalf("openWritePaths len = %d, want 0", len(state.openWritePaths))
 	}
 }

@@ -324,6 +324,7 @@ print("survived")
 PY
   expect_killed "behavior threshold" python3 "${sim}"
   wait_for_log "${agent_log}" 'behavior threshold' "behavior threshold"
+  wait_for_log "${agent_log}" '"features":{' "behavior features"
   stop_agent
 }
 
