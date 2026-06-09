@@ -95,6 +95,7 @@ scores:
   high_rate_bonus: 15
   exec_after_blocked: 10
   scan: 1
+  mmap: 3
 YAML
 }
 
@@ -214,6 +215,7 @@ scores:
   high_rate_bonus: 15
   exec_after_blocked: 10
   scan: 1
+  mmap: 3
 YAML
   start_agent "${policy}" "${agent_log}" dry-run
   wait_for_log "${agent_log}" 'synced_bpf_policy ioc_extensions=1 ransom_notes=1 protected_dirs=1' "BPF IOC policy sync"
@@ -397,6 +399,35 @@ print("survived")
 PY
   expect_killed "getdents64 scan scoring" python3 "${sim}"
   wait_for_log "${agent_log}" 'directory scan in protected scope' "getdents64 scan"
+  stop_agent
+}
+
+test_writable_mmap_scores_and_kills() {
+  log "writable mmap scores and kills"
+  local dir="${TMP_DIR}/mmap"
+  local bl="${TMP_DIR}/mmap-blacklist.txt"
+  local policy="${TMP_DIR}/mmap.yaml"
+  local agent_log="${TMP_DIR}/mmap-agent.log"
+  local sim="${TMP_DIR}/mmap_sim.py"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  truncate -s 4096 "${dir}/mapped.bin"
+  write_policy "${policy}" mmap-test 4 kill "${dir}" "${bl}"
+  start_agent "${policy}" "${agent_log}"
+  cat >"${sim}" <<PY
+import mmap, os, time
+p = "${dir}/mapped.bin"
+fd = os.open(p, os.O_RDWR)
+for i in range(100):
+    m = mmap.mmap(fd, 4096, flags=mmap.MAP_SHARED, prot=mmap.PROT_WRITE)
+    m[0:1] = b"x"
+    m.flush()
+    m.close()
+    time.sleep(0.02)
+print("survived")
+PY
+  expect_killed "writable mmap scoring" python3 "${sim}"
+  wait_for_log "${agent_log}" 'writable mmap in protected scope' "writable mmap"
   stop_agent
 }
 
@@ -848,6 +879,7 @@ main() {
   test_behavior_threshold_kills
   test_feature_rule_distinct_paths_kills
   test_getdents64_scan_scores_and_kills
+  test_writable_mmap_scores_and_kills
   test_fd_write_path_scoring_kills
   test_fd_lifecycle_tracking
   test_relative_dirfd_path_scoring_kills

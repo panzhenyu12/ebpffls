@@ -18,6 +18,7 @@ const (
 	EventClose
 	EventDup
 	EventScan
+	EventMmap
 )
 
 const (
@@ -99,6 +100,8 @@ func (e Event) TypeName() string {
 		return "dup"
 	case EventScan:
 		return "scan"
+	case EventMmap:
+		return "mmap"
 	default:
 		return fmt.Sprintf("unknown(%d)", e.Type)
 	}

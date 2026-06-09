@@ -586,6 +586,10 @@ func (a *Agent) featurePaths(ev sensor.Event) []string {
 		if path := a.fdPath(ev.TGID, ev.Arg0); path != "" {
 			return []string{path}
 		}
+	case sensor.EventMmap:
+		if path := a.fdPath(ev.TGID, ev.Arg0); path != "" {
+			return []string{path}
+		}
 	case sensor.EventTruncate:
 		if ev.Path != "" {
 			return []string{ev.Path}
@@ -795,6 +799,17 @@ func (a *Agent) score(ev sensor.Event) (int, string) {
 		}
 		if a.inProtectedScope(path) {
 			return a.policy.Scores.Scan, "directory scan in protected scope"
+		}
+	case sensor.EventMmap:
+		path = a.touchFD(ev.TGID, ev.Arg0, ev.Timestamp)
+		if path == "" {
+			return 0, ""
+		}
+		if a.inBackupScope(path) {
+			return a.policy.Scores.Mmap + a.policy.Scores.BackupDestroy, "writable mmap on backup fd"
+		}
+		if a.inProtectedScope(path) {
+			return a.policy.Scores.Mmap, "writable mmap in protected scope"
 		}
 	case sensor.EventOpen:
 		if !protected && !backup {

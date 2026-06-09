@@ -15,6 +15,7 @@ enum event_type {
 	EVENT_CLOSE = 8,
 	EVENT_DUP = 9,
 	EVENT_SCAN = 10,
+	EVENT_MMAP = 11,
 };
 
 enum block_reason {

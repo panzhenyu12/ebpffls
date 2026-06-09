@@ -14,6 +14,9 @@ char LICENSE[] SEC("license") = "Dual MIT/GPL";
 #define O_TRUNC 00001000
 #define F_DUPFD 0
 #define F_DUPFD_CLOEXEC 1030
+#define PROT_WRITE 0x2
+#define MAP_SHARED 0x01
+#define MAP_SHARED_VALIDATE 0x03
 #define SIGKILL 9
 #define NAME_MAX_LEN 128
 #define MAX_DENTRY_DEPTH 8
@@ -367,6 +370,12 @@ int kp_override_getdents64(struct pt_regs *ctx)
 	return kill_blocked_syscall();
 }
 
+SEC("kprobe/__x64_sys_mmap")
+int kp_override_mmap(struct pt_regs *ctx)
+{
+	return kill_blocked_syscall();
+}
+
 SEC("lsm/file_open")
 int BPF_PROG(enforce_file_open, struct file *file)
 {
@@ -649,6 +658,28 @@ int trace_getdents64(struct trace_event_raw_sys_enter *ctx)
 
 	e->arg0 = (int)ctx->args[0];
 	e->size = (__u64)ctx->args[2];
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_mmap")
+int trace_mmap(struct trace_event_raw_sys_enter *ctx)
+{
+	struct event *e;
+	int prot = (int)ctx->args[2];
+	int flags = (int)ctx->args[3];
+
+	if (!(prot & PROT_WRITE))
+		return 0;
+	if ((flags & MAP_SHARED_VALIDATE) != MAP_SHARED && (flags & MAP_SHARED_VALIDATE) != MAP_SHARED_VALIDATE)
+		return 0;
+
+	e = new_event(EVENT_MMAP);
+	if (!e)
+		return 0;
+	e->arg0 = (int)ctx->args[4];
+	e->arg1 = prot;
+	e->size = (__u64)ctx->args[1];
 	bpf_ringbuf_submit(e, 0);
 	return 0;
 }

@@ -20,6 +20,7 @@ type Scores struct {
 	HighRateBonus       int `yaml:"high_rate_bonus"`
 	ExecAfterBlocked    int `yaml:"exec_after_blocked"`
 	Scan                int `yaml:"scan"`
+	Mmap                int `yaml:"mmap"`
 }
 
 type Rule struct {
@@ -121,6 +122,9 @@ func Load(path string) (Policy, error) {
 	}
 	if p.Scores.Scan == 0 {
 		p.Scores.Scan = 1
+	}
+	if p.Scores.Mmap == 0 {
+		p.Scores.Mmap = 3
 	}
 	for i := range p.Rules {
 		r := &p.Rules[i]

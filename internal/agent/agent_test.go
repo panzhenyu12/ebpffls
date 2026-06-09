@@ -249,6 +249,31 @@ func TestScoreDirectoryScanUsesFDPath(t *testing.T) {
 	}
 }
 
+func TestScoreWritableMmapUsesFDPath(t *testing.T) {
+	a := &Agent{
+		policy: config.Policy{
+			ProtectedDirs: []string{"/protected"},
+			Scores:        config.Scores{Mmap: 4},
+		},
+		fdPaths: map[fdKey]fdState{
+			{TGID: 42, FD: 3}: {Path: "/protected/data.bin"},
+		},
+	}
+
+	score, reason := a.score(sensor.Event{
+		Type: sensor.EventMmap,
+		TGID: 42,
+		Arg0: 3,
+	})
+
+	if score != 4 {
+		t.Fatalf("score = %d, want 4", score)
+	}
+	if reason != "writable mmap in protected scope" {
+		t.Fatalf("reason = %q", reason)
+	}
+}
+
 func TestMatchRuleReturnsFirstMatchingRule(t *testing.T) {
 	a := &Agent{
 		policy: config.Policy{

@@ -22,7 +22,7 @@
 - BPF IOC 已从 yaml 同步到 map；path-based LSM IOC 已受 `protected_dirs` inode 作用域约束
 - blocked lineage exec 已做 kill 传播；`exec_after_blocked` 作为评分规则未实现
 - 仅 x86_64 kprobe；无 `bpf_override_return` 真 deny
-- 无 mmap/io_uring 类观测；getdents64 扫描采样已覆盖
+- 无 io_uring 类观测；mmap 与 getdents64 采样已覆盖
 
 ---
 
@@ -88,7 +88,7 @@
 
 | ID | 任务 | 产出 |
 |----|------|------|
-| 3.1 | `mmap` LSM `file_mmap` 或等效 trace | `SO_ENCRYPT_WRITE` 补洞 |
+| 3.1 | `mmap` LSM `file_mmap` 或等效 trace | 已完成：writable shared mmap fd→path 评分与 kprobe kill |
 | 3.2 | `copy_file_range` tracepoint | 已完成：目标 fd→path 评分与 kprobe kill |
 | 3.3 | kprobe 符号多架构（arm64 `__arm64_sys_*`）或 fentry 迁移 | 可移植 |
 | 3.4 | `bpf_override_return(-EPERM)` deny 路径与 kill 路径分离 | 真同步 deny |

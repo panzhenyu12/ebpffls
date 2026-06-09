@@ -79,3 +79,4 @@ scores:
   high_rate_bonus: 15
   exec_after_blocked: 10
   scan: 1
+  mmap: 3

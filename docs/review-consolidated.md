@@ -44,7 +44,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 归一化事件 (struct event → agent.Event)
 ```
 
-**覆盖评估：** 核心文件变异调用约 82–90%；`write`/`pwrite64`/`writev`/`copy_file_range`/`getdents64` 已做 fd→path 评分，mmap/io_uring 仍是弱点。
+**覆盖评估：** 核心文件变异调用约 85–92%；`write`/`pwrite64`/`writev`/`mmap`/`copy_file_range`/`getdents64` 已做 fd→path 评分，io_uring 仍是弱点。
 
 ---
 
@@ -58,7 +58,8 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 | 零日原地 write 加密 | 中高 | 轨2 fd→path 评分覆盖 write/pwrite64/writev/copy_file_range；已标记后 kprobe 可补杀 |
 | fork 子进程逃逸 | 低 | exec_after_blocked 未实现 |
 | comm 伪装 trusted | 中 | 可配置 comm + exe 路径 + uid；默认策略已启用严格身份；backup_dirs 高危操作不被 trust 豁免 |
-| mmap / io_uring | 无 | 未观测 |
+| mmap | 中 | writable shared mmap fd→path 评分 |
+| io_uring | 无 | 未观测 |
 | 目录扫描 | 中 | getdents64 fd→path 评分 |
 
 ---
@@ -114,3 +115,4 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 | 2026-06-09 | 完成 Phase 2.3：加密状态机输出 STAGE/FINALIZE |
 | 2026-06-09 | 完成 Phase 2.6：结构化 metrics 日志导出 alert/block/blacklist/drop 计数 |
 | 2026-06-09 | 完成 Phase 3.5：getdents64 目录扫描采样与阻断回归 |
+| 2026-06-09 | 完成 Phase 3.1：writable shared mmap 采样与阻断回归 |
