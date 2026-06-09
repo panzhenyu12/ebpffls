@@ -107,6 +107,11 @@ read-only deployment hardening remain deployment tasks.
 
 ## Policy model (behavior track)
 
+The CLI accepts repeated `--config` flags. Multiple policy files are merged into
+one runtime policy: list fields such as `protected_dirs`, IOC names, blacklist
+files, and `rules` are appended, while scalar fields such as `threshold`,
+`action`, and score values use the later non-empty value.
+
 Within a sliding window (`window`, default 10s), per-TGID score includes:
 
 - write-open on protected or backup paths

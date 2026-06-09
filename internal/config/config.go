@@ -60,6 +60,29 @@ type Policy struct {
 }
 
 func Load(path string) (Policy, error) {
+	policy, err := loadOne(path)
+	if err != nil {
+		return Policy{}, err
+	}
+	return normalize(policy)
+}
+
+func LoadMany(paths []string) (Policy, error) {
+	if len(paths) == 0 {
+		paths = []string{"configs/ransomware.yaml"}
+	}
+	policies := make([]Policy, 0, len(paths))
+	for _, path := range paths {
+		policy, err := loadOne(path)
+		if err != nil {
+			return Policy{}, err
+		}
+		policies = append(policies, policy)
+	}
+	return normalize(mergePolicies(policies))
+}
+
+func loadOne(path string) (Policy, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Policy{}, fmt.Errorf("read config: %w", err)
@@ -68,6 +91,11 @@ func Load(path string) (Policy, error) {
 	if err := yaml.Unmarshal(data, &p); err != nil {
 		return Policy{}, fmt.Errorf("parse config: %w", err)
 	}
+	return p, nil
+}
+
+func normalize(p Policy) (Policy, error) {
+	var err error
 	if p.WindowRaw == "" {
 		p.WindowRaw = "10s"
 	}
@@ -154,6 +182,93 @@ func Load(path string) (Policy, error) {
 		}
 	}
 	return p, nil
+}
+
+func mergePolicies(policies []Policy) Policy {
+	var merged Policy
+	for _, p := range policies {
+		if p.Name != "" {
+			if merged.Name == "" {
+				merged.Name = p.Name
+			} else {
+				merged.Name += "+" + p.Name
+			}
+		}
+		if p.Description != "" {
+			merged.Description = p.Description
+		}
+		if p.WindowRaw != "" {
+			merged.WindowRaw = p.WindowRaw
+		}
+		if p.Threshold != 0 {
+			merged.Threshold = p.Threshold
+		}
+		if p.Action != "" {
+			merged.Action = p.Action
+		}
+		if p.BlockTTLRaw != "" {
+			merged.BlockTTLRaw = p.BlockTTLRaw
+		}
+		if p.BlacklistScanRaw != "" {
+			merged.BlacklistScanRaw = p.BlacklistScanRaw
+		}
+		merged.ProtectedDirs = append(merged.ProtectedDirs, p.ProtectedDirs...)
+		merged.BackupDirs = append(merged.BackupDirs, p.BackupDirs...)
+		merged.SelfProtectPaths = append(merged.SelfProtectPaths, p.SelfProtectPaths...)
+		merged.TrustedProcesses = append(merged.TrustedProcesses, p.TrustedProcesses...)
+		merged.TrustedExePaths = append(merged.TrustedExePaths, p.TrustedExePaths...)
+		merged.TrustedUIDs = append(merged.TrustedUIDs, p.TrustedUIDs...)
+		merged.BlacklistHashes = append(merged.BlacklistHashes, p.BlacklistHashes...)
+		merged.BlacklistHashFiles = append(merged.BlacklistHashFiles, p.BlacklistHashFiles...)
+		merged.SuspiciousExtensions = append(merged.SuspiciousExtensions, p.SuspiciousExtensions...)
+		merged.RansomNoteNames = append(merged.RansomNoteNames, p.RansomNoteNames...)
+		merged.Rules = append(merged.Rules, p.Rules...)
+		merged.Scores = mergeScores(merged.Scores, p.Scores)
+	}
+	return merged
+}
+
+func mergeScores(base, override Scores) Scores {
+	if override.Write != 0 {
+		base.Write = override.Write
+	}
+	if override.Truncate != 0 {
+		base.Truncate = override.Truncate
+	}
+	if override.Rename != 0 {
+		base.Rename = override.Rename
+	}
+	if override.Unlink != 0 {
+		base.Unlink = override.Unlink
+	}
+	if override.SelfProtect != 0 {
+		base.SelfProtect = override.SelfProtect
+	}
+	if override.SuspiciousExtension != 0 {
+		base.SuspiciousExtension = override.SuspiciousExtension
+	}
+	if override.RansomNote != 0 {
+		base.RansomNote = override.RansomNote
+	}
+	if override.BackupDestroy != 0 {
+		base.BackupDestroy = override.BackupDestroy
+	}
+	if override.HighRateBonus != 0 {
+		base.HighRateBonus = override.HighRateBonus
+	}
+	if override.ExecAfterBlocked != 0 {
+		base.ExecAfterBlocked = override.ExecAfterBlocked
+	}
+	if override.Scan != 0 {
+		base.Scan = override.Scan
+	}
+	if override.Mmap != 0 {
+		base.Mmap = override.Mmap
+	}
+	if override.IOUring != 0 {
+		base.IOUring = override.IOUring
+	}
+	return base
 }
 
 func validateRule(rule Rule) error {

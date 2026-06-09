@@ -122,6 +122,25 @@ start_agent() {
   }
 }
 
+start_agent_multi_config() {
+  local logfile="$1"
+  local mode="$2"
+  shift 2
+
+  stop_agent
+  if [[ "${mode}" == "dry-run" ]]; then
+    "${BIN}" monitor "$@" >"${logfile}" 2>&1 &
+  else
+    "${BIN}" monitor "$@" --dry-run=false >"${logfile}" 2>&1 &
+  fi
+  AGENT_PID="$!"
+  sleep 1
+  kill -0 "${AGENT_PID}" 2>/dev/null || {
+    cat "${logfile}" >&2 || true
+    fail "agent failed to start"
+  }
+}
+
 expect_killed() {
   local name="$1"
   shift
@@ -444,6 +463,43 @@ C
   expect_survives "distinct_paths block rule" "${sim}" "${dir}"
   wait_for_log "${agent_log}" 'distinct path block rule' "distinct_paths block rule"
   wait_for_log "${agent_log}" '"action":"deny"' "block action normalized to deny"
+  stop_agent
+}
+
+test_multi_config_merges_protected_dirs() {
+  log "multiple --config files merge protected dirs"
+  local base_dir="${TMP_DIR}/multi-base"
+  local overlay_dir="${TMP_DIR}/multi-overlay"
+  local bl="${TMP_DIR}/multi-blacklist.txt"
+  local base_policy="${TMP_DIR}/multi-base.yaml"
+  local overlay_policy="${TMP_DIR}/multi-overlay.yaml"
+  local agent_log="${TMP_DIR}/multi-agent.log"
+  local sim="${TMP_DIR}/multi.py"
+  mkdir -p "${base_dir}" "${overlay_dir}"
+  : >"${bl}"
+  write_policy "${base_policy}" multi-base-test 100 kill "${base_dir}" "${bl}"
+  cat >"${overlay_policy}" <<YAML
+name: multi-overlay-test
+threshold: 2
+action: kill
+protected_dirs:
+  - ${overlay_dir}
+scores:
+  write: 1
+YAML
+  start_agent_multi_config "${agent_log}" enforce --config "${base_policy}" --config "${overlay_policy}"
+  cat >"${sim}" <<PY
+import time
+base = "${overlay_dir}"
+for i in range(20):
+    with open(f"{base}/merged-{i}.txt", "w") as f:
+        f.write("data")
+    time.sleep(0.02)
+print("survived")
+PY
+  expect_killed "multi-config protected dir" python3 "${sim}"
+  wait_for_log "${agent_log}" 'policy=multi-base-test+multi-overlay-test' "multi-config policy name"
+  wait_for_log "${agent_log}" 'write-open in protected scope' "multi-config protected scoring"
   stop_agent
 }
 
@@ -1226,6 +1282,7 @@ main() {
   test_behavior_threshold_kills
   test_feature_rule_distinct_paths_kills
   test_feature_rule_distinct_paths_blocks
+  test_multi_config_merges_protected_dirs
   test_getdents64_scan_scores_and_kills
   test_writable_mmap_scores_and_kills
   test_io_uring_after_protected_activity_scores

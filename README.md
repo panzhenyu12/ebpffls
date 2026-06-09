@@ -67,6 +67,14 @@ Enable enforcement after validating policies:
 sudo ./bin/ebpffls monitor --config configs/ransomware.yaml --dry-run=false
 ```
 
+Multiple policy files can be merged by repeating `--config`; later files append
+list fields such as `protected_dirs` and override scalar defaults such as
+`threshold` or `action`:
+
+```bash
+sudo ./bin/ebpffls monitor --config configs/ransomware.yaml --config team.yaml
+```
+
 Debug raw events:
 
 ```bash

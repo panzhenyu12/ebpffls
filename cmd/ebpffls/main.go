@@ -39,14 +39,14 @@ func run(args []string) error {
 
 func monitor(args []string) error {
 	fs := pflag.NewFlagSet("monitor", pflag.ContinueOnError)
-	configPath := fs.StringP("config", "c", "configs/ransomware.yaml", "policy config path")
+	configPaths := fs.StringArrayP("config", "c", []string{"configs/ransomware.yaml"}, "policy config path; repeat to merge multiple policies")
 	dryRun := fs.Bool("dry-run", true, "log detections without updating the kernel block map")
 	debugEvents := fs.Bool("debug-events", false, "log raw eBPF events for troubleshooting")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	policy, err := config.Load(*configPath)
+	policy, err := config.LoadMany(*configPaths)
 	if err != nil {
 		return err
 	}
@@ -72,7 +72,7 @@ func usage() {
 	fmt.Println(`ebpffls - eBPF anti-ransomware runtime guard
 
 Usage:
-  ebpffls monitor --config configs/ransomware.yaml [--dry-run=false]
+  ebpffls monitor --config configs/ransomware.yaml [--config team.yaml ...] [--dry-run=false]
 
 Actions:
   log   detect and alert only
