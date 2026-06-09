@@ -754,6 +754,66 @@ PY
   stop_agent
 }
 
+test_network_egress_ipv6_after_file_activity_scores() {
+  log "IPv6 network egress after protected file activity scores and kills"
+  local dir="${TMP_DIR}/network-egress-ipv6"
+  local bl="${TMP_DIR}/network-egress-ipv6-blacklist.txt"
+  local policy="${TMP_DIR}/network-egress-ipv6.yaml"
+  local agent_log="${TMP_DIR}/network-egress-ipv6-agent.log"
+  local sim="${TMP_DIR}/network-egress-ipv6.py"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" network-egress-ipv6-test 6 kill "${dir}" "${bl}"
+  cat >>"${policy}" <<'YAML'
+network_egress:
+  enabled: true
+  score: 5
+  allowed_ports:
+    - 9
+YAML
+  start_agent "${policy}" "${agent_log}"
+  cat >"${sim}" <<PY
+import socket, threading, time
+
+try:
+    server = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    server.bind(("::1", 0))
+except OSError:
+    raise SystemExit(77)
+server.listen(1)
+port = server.getsockname()[1]
+
+def accept_once():
+    conn, _ = server.accept()
+    conn.close()
+    server.close()
+
+threading.Thread(target=accept_once, daemon=True).start()
+with open("${dir}/stage.txt", "w") as f:
+    f.write("data")
+time.sleep(0.2)
+client = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+client.connect(("::1", port))
+client.close()
+time.sleep(5)
+print("survived")
+PY
+  set +e
+  timeout 8s python3 "${sim}"
+  local rc=$?
+  set -e
+  if [[ "${rc}" -eq 77 ]]; then
+    log "IPv6 loopback unavailable; IPv6 network egress check skipped"
+    stop_agent
+    return
+  fi
+  if [[ "${rc}" -ne 137 ]]; then
+    fail "IPv6 network egress scoring: expected SIGKILL exit 137, got ${rc}"
+  fi
+  wait_for_log "${agent_log}" 'network egress after suspicious activity' "IPv6 network egress"
+  stop_agent
+}
+
 test_systemd_watchdog_notify() {
   log "systemd notify READY and WATCHDOG messages are emitted"
   local dir="${TMP_DIR}/systemd-watchdog"
@@ -1505,6 +1565,7 @@ main() {
   test_writable_mmap_scores_and_kills
   test_io_uring_after_protected_activity_scores
   test_network_egress_after_file_activity_scores
+  test_network_egress_ipv6_after_file_activity_scores
   test_systemd_watchdog_notify
   test_deny_override_rejects_marked_syscall
   test_fd_write_path_scoring_kills

@@ -27,6 +27,7 @@ const (
 	taskCommLen = 16
 	pathMaxLen  = 256
 	eventSize   = 8 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 8 + taskCommLen + pathMaxLen + pathMaxLen
+	afInet6     = 10
 )
 
 type Event struct {
@@ -74,7 +75,11 @@ func DecodeEvent(raw []byte) (Event, error) {
 	off += 8
 	e.Comm = cString(raw[off : off+taskCommLen])
 	off += taskCommLen
-	e.Path = cString(raw[off : off+pathMaxLen])
+	if e.Type == EventConnect && e.Size == afInet6 {
+		e.Path = string(raw[off : off+16])
+	} else {
+		e.Path = cString(raw[off : off+pathMaxLen])
+	}
 	off += pathMaxLen
 	e.Path2 = cString(raw[off : off+pathMaxLen])
 	return e, nil

@@ -19,6 +19,7 @@ char LICENSE[] SEC("license") = "Dual MIT/GPL";
 #define MAP_SHARED_VALIDATE 0x03
 #define SIGKILL 9
 #define AF_INET 2
+#define AF_INET6 10
 #define NAME_MAX_LEN 128
 #define MAX_DENTRY_DEPTH 8
 #define MAX_CGROUP_ANCESTORS 32
@@ -760,6 +761,7 @@ SEC("tracepoint/syscalls/sys_enter_connect")
 int trace_connect(struct trace_event_raw_sys_enter *ctx)
 {
 	struct sockaddr_in addr = {};
+	struct sockaddr_in6 addr6 = {};
 	struct event *e;
 	struct sockaddr *user_addr = (struct sockaddr *)ctx->args[1];
 	int addrlen = (int)ctx->args[2];
@@ -768,15 +770,26 @@ int trace_connect(struct trace_event_raw_sys_enter *ctx)
 		return 0;
 	if (bpf_probe_read_user(&addr, sizeof(addr), user_addr) != 0)
 		return 0;
-	if (addr.sin_family != AF_INET)
+	if (addr.sin_family == AF_INET) {
+		e = new_event(EVENT_CONNECT);
+		if (!e)
+			return 0;
+		e->arg0 = (__s32)addr.sin_addr.s_addr;
+		e->arg1 = (__s32)ntohs16(addr.sin_port);
+		e->size = AF_INET;
+		bpf_ringbuf_submit(e, 0);
 		return 0;
-
+	}
+	if (addr.sin_family != AF_INET6 || addrlen < sizeof(addr6))
+		return 0;
+	if (bpf_probe_read_user(&addr6, sizeof(addr6), user_addr) != 0)
+		return 0;
 	e = new_event(EVENT_CONNECT);
 	if (!e)
 		return 0;
-	e->arg0 = (__s32)addr.sin_addr.s_addr;
-	e->arg1 = (__s32)ntohs16(addr.sin_port);
-	e->size = AF_INET;
+	e->arg1 = (__s32)ntohs16(addr6.sin6_port);
+	e->size = AF_INET6;
+	__builtin_memcpy(e->path, &addr6.sin6_addr, sizeof(addr6.sin6_addr));
 	bpf_ringbuf_submit(e, 0);
 	return 0;
 }

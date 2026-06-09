@@ -1025,7 +1025,7 @@ func (a *Agent) inSelfProtectScope(path string) bool {
 }
 
 func (a *Agent) networkAllowed(ev sensor.Event) bool {
-	ip := eventIPv4(ev)
+	ip := eventIP(ev)
 	if !ip.IsValid() {
 		return true
 	}
@@ -1188,7 +1188,23 @@ func matchesCgroupPath(path string, candidates []string) bool {
 	return false
 }
 
-func eventIPv4(ev sensor.Event) netip.Addr {
+func eventIP(ev sensor.Event) netip.Addr {
+	const (
+		afInet  = 2
+		afInet6 = 10
+	)
+	if ev.Size == afInet6 {
+		raw := []byte(ev.Path)
+		if len(raw) < 16 {
+			return netip.Addr{}
+		}
+		var addr [16]byte
+		copy(addr[:], raw[:16])
+		return netip.AddrFrom16(addr)
+	}
+	if ev.Size != 0 && ev.Size != afInet {
+		return netip.Addr{}
+	}
 	raw := uint32(ev.Arg0)
 	return netip.AddrFrom4([4]byte{
 		byte(raw),

@@ -1,6 +1,7 @@
 package sensor
 
 import (
+	"encoding/binary"
 	"errors"
 	"os"
 	"reflect"
@@ -224,5 +225,30 @@ func TestSyncCgroupScopeWritesIDsAndToggle(t *testing.T) {
 	}
 	if err := allowed.Lookup(cgid, &got); !errors.Is(err, ebpf.ErrKeyNotExist) {
 		t.Fatalf("old cgroup id err = %v, want ErrKeyNotExist", err)
+	}
+}
+
+func TestDecodeEventPreservesIPv6ConnectBytes(t *testing.T) {
+	raw := make([]byte, eventSize)
+	off := 8 + 4 + 4 + 4 + 4
+	binary.LittleEndian.PutUint32(raw[off:], EventConnect)
+	off += 4
+	off += 4
+	off += 4
+	off += 4
+	binary.LittleEndian.PutUint64(raw[off:], 10)
+	off += 8
+	off += taskCommLen
+	copy(raw[off:], []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1})
+
+	ev, err := DecodeEvent(raw)
+	if err != nil {
+		t.Fatalf("DecodeEvent: %v", err)
+	}
+	if len(ev.Path) != 16 {
+		t.Fatalf("IPv6 path len = %d, want 16", len(ev.Path))
+	}
+	if ev.Path[15] != 1 {
+		t.Fatalf("last IPv6 byte = %d, want 1", ev.Path[15])
 	}
 }

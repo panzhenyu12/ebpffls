@@ -34,7 +34,7 @@ syscalls map to semantic ransomware operations.
 | `write` / `pwrite64` / `writev` | Encrypt in-place | tracepoint | protected/backup fd path when fd was observed | kprobe after mark; optional LSM |
 | `mmap` | Memory-mapped write | tracepoint | writable shared mmap on protected/backup fd when fd was observed | kprobe after mark |
 | `io_uring_enter` | Async I/O activity | tracepoint | low-confidence score after prior protected file activity | optional kprobe after mark |
-| `connect` | Network egress | tracepoint | optional IPv4 egress score after prior protected file activity | userspace kill after mark |
+| `connect` | Network egress | tracepoint | optional IPv4/IPv6 egress score after prior protected file activity | userspace kill after mark |
 | `copy_file_range` | Copy into new file | tracepoint | protected/backup destination fd path when fd was observed | kprobe after mark |
 | `rename` / `renameat(2)` | Suffix replace | tracepoint | protected rename; protected suspicious suffix is immediate IOC | kprobe; optional LSM IOC |
 | `unlinkat` | Delete | tracepoint | protected/backup | kprobe; optional LSM |
@@ -120,10 +120,10 @@ cgroup v2 IDs into a BPF map so tracepoint events and path-scoped LSM IOC checks
 can be filtered before they reach the ring buffer.
 
 `network_egress` can enable a first double-extortion signal. The BPF side
-observes IPv4 `connect(2)` attempts, and the Go agent scores non-allowlisted
-destinations only after the same process has already touched protected files.
-This avoids treating ordinary network clients as ransomware by network activity
-alone.
+observes IPv4 and IPv6 `connect(2)` attempts, and the Go agent scores
+non-allowlisted destinations only after the same process has already touched
+protected files. This avoids treating ordinary network clients as ransomware by
+network activity alone.
 
 Within a sliding window (`window`, default 10s), per-TGID score includes:
 
@@ -131,7 +131,7 @@ Within a sliding window (`window`, default 10s), per-TGID score includes:
 - write/pwrite64/writev syscalls on protected or backup file descriptors observed through open/openat/openat2
 - writable shared mmap on protected or backup file descriptors
 - io_uring_enter activity after prior protected file activity
-- optional IPv4 network egress after prior protected file activity
+- optional IPv4/IPv6 network egress after prior protected file activity
 - copy_file_range to protected or backup file descriptors
 - truncate/ftruncate, rename, unlink on protected or backup paths
 - getdents64 directory scans on protected or backup file descriptors

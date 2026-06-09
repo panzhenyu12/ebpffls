@@ -129,7 +129,7 @@ Within a sliding window, the agent scores:
 - io_uring_enter activity after prior protected file activity
 - copy_file_range to protected or backup file descriptors
 - getdents64 directory scans on protected or backup file descriptors
-- optional IPv4 network egress after prior protected file activity
+- optional IPv4/IPv6 network egress after prior protected file activity
 - truncate, ftruncate, rename, and unlink activity
 - suspicious extensions and ransom note filenames
 - backup/snapshot path destruction
@@ -200,6 +200,6 @@ destruction scoring under `backup_dirs`.
 - BPF IOC maps sync from YAML, but path-scoped IOC hard-deny requires active BPF LSM
 - `deny` requires syscall error-injection support for kprobe override, or active BPF LSM for LSM hooks
 - io_uring support observes `io_uring_enter` only; it does not parse SQE contents
-- Network egress coverage is limited to optional IPv4 `connect(2)` scoring after protected file activity; payload inspection and destination reputation are out of scope
+- Network egress coverage is limited to optional IPv4/IPv6 `connect(2)` scoring after protected file activity; payload inspection and destination reputation are out of scope
 
 See [docs/roadmap.md](docs/roadmap.md) for planned improvements.

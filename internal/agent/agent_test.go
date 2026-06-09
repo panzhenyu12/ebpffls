@@ -407,6 +407,39 @@ func TestScoreNetworkEgressHonorsAllowlist(t *testing.T) {
 	if score != 0 {
 		t.Fatalf("allowed port score = %d, want 0", score)
 	}
+	score, _ = a.score(sensor.Event{Type: sensor.EventConnect, TGID: 42, Size: 99, Arg1: 4444})
+	if score != 0 {
+		t.Fatalf("unsupported family score = %d, want 0", score)
+	}
+}
+
+func TestScoreNetworkEgressHonorsIPv6Allowlist(t *testing.T) {
+	a := &Agent{
+		policy: config.Policy{
+			NetworkEgress: config.NetworkEgress{
+				Enabled:     true,
+				Score:       6,
+				AllowedCIDR: []string{"::1/128"},
+			},
+		},
+		procs: map[uint32]*procState{
+			42: {Features: procFeatures{DistinctPaths: 1}},
+		},
+	}
+
+	loopback := string([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1})
+	score, _ := a.score(sensor.Event{Type: sensor.EventConnect, TGID: 42, Size: 10, Path: loopback, Arg1: 4444})
+	if score != 0 {
+		t.Fatalf("loopback IPv6 score = %d, want 0", score)
+	}
+	public := string([]byte{0x20, 0x01, 0x48, 0x60, 0x48, 0x60, 0, 0, 0, 0, 0, 0, 0, 0, 0x88, 0x88})
+	score, reason := a.score(sensor.Event{Type: sensor.EventConnect, TGID: 42, Size: 10, Path: public, Arg1: 4444})
+	if score != 6 {
+		t.Fatalf("public IPv6 score = %d, want 6", score)
+	}
+	if reason != "network egress after suspicious activity" {
+		t.Fatalf("reason = %q", reason)
+	}
 }
 
 func TestScoreSelfProtectWriteOpen(t *testing.T) {
