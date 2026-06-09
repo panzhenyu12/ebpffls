@@ -141,6 +141,20 @@ start_agent_multi_config() {
   }
 }
 
+start_agent_debug() {
+  local policy="$1"
+  local logfile="$2"
+
+  stop_agent
+  "${BIN}" monitor --config "${policy}" --dry-run=false --debug-events >"${logfile}" 2>&1 &
+  AGENT_PID="$!"
+  sleep 1
+  kill -0 "${AGENT_PID}" 2>/dev/null || {
+    cat "${logfile}" >&2 || true
+    fail "agent failed to start"
+  }
+}
+
 expect_killed() {
   local name="$1"
   shift
@@ -516,6 +530,7 @@ test_cgroup_scope_filters_events() {
   local skip_log="${TMP_DIR}/cgroup-skip-agent.log"
   local match_log="${TMP_DIR}/cgroup-match-agent.log"
   local sim="${TMP_DIR}/cgroup-scope.py"
+  local scoped_out_path="${dir}/skip-0.txt"
   local cg
   cg="$(current_cgroup_path)"
   [[ -n "${cg}" ]] || fail "current cgroup path unavailable"
@@ -534,13 +549,18 @@ for i in range(5):
         f.write("data")
     time.sleep(0.02)
 PY
-  start_agent "${skip_policy}" "${skip_log}"
+  start_agent_debug "${skip_policy}" "${skip_log}"
   expect_survives "cgroup scoped-out workload" python3 "${sim}"
   sleep 0.5
   if grep -q 'alert=' "${skip_log}"; then
     cat "${skip_log}" >&2 || true
     fail "cgroup scoped-out workload emitted alert"
   fi
+  if grep -q "${scoped_out_path}" "${skip_log}"; then
+    cat "${skip_log}" >&2 || true
+    fail "cgroup scoped-out workload reached agent debug events"
+  fi
+  wait_for_log "${skip_log}" 'cgroup_scope=0' "cgroup BPF scope empty sync"
   stop_agent
 
   write_policy "${match_policy}" cgroup-match-test 2 kill "${dir}" "${bl}"
@@ -559,6 +579,7 @@ for i in range(100):
 print("survived")
 PY
   expect_killed "cgroup scoped-in workload" python3 "${sim}"
+  wait_for_log "${match_log}" 'cgroup_scope=1' "cgroup BPF scope sync"
   wait_for_log "${match_log}" 'write-open in protected scope' "cgroup scoped-in scoring"
   stop_agent
 }

@@ -151,3 +151,78 @@ func TestSyncProtectedDirsWritesStatKey(t *testing.T) {
 		t.Fatalf("lookup protected dir key: %v", err)
 	}
 }
+
+func TestCgroupFSPath(t *testing.T) {
+	if got := cgroupFSPath("/user.slice/session.scope"); got != "/sys/fs/cgroup/user.slice/session.scope" {
+		t.Fatalf("cgroupFSPath = %q", got)
+	}
+	if got := cgroupFSPath("/"); got != "/sys/fs/cgroup" {
+		t.Fatalf("root cgroupFSPath = %q", got)
+	}
+}
+
+func TestSyncCgroupScopeWritesIDsAndToggle(t *testing.T) {
+	allowed, err := ebpf.NewMap(&ebpf.MapSpec{
+		Name:       "allowed_cgroups_test",
+		Type:       ebpf.Hash,
+		KeySize:    8,
+		ValueSize:  1,
+		MaxEntries: 8,
+	})
+	if err != nil {
+		t.Fatalf("create allowed map: %v", err)
+	}
+	defer allowed.Close()
+	enabled, err := ebpf.NewMap(&ebpf.MapSpec{
+		Name:       "cgroup_scope_enabled_test",
+		Type:       ebpf.Array,
+		KeySize:    4,
+		ValueSize:  1,
+		MaxEntries: 1,
+	})
+	if err != nil {
+		t.Fatalf("create enabled map: %v", err)
+	}
+	defer enabled.Close()
+
+	count, err := syncCgroupScope(allowed, enabled, []string{"/"})
+	if err != nil {
+		t.Fatalf("syncCgroupScope: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+	var on uint8
+	if err := enabled.Lookup(uint32(0), &on); err != nil {
+		t.Fatalf("lookup enabled: %v", err)
+	}
+	if on != 1 {
+		t.Fatalf("enabled = %d, want 1", on)
+	}
+	info, err := os.Stat("/sys/fs/cgroup")
+	if err != nil {
+		t.Fatalf("stat cgroup root: %v", err)
+	}
+	cgid := uint64(info.Sys().(*syscall.Stat_t).Ino)
+	var got uint8
+	if err := allowed.Lookup(cgid, &got); err != nil {
+		t.Fatalf("lookup cgroup id: %v", err)
+	}
+
+	count, err = syncCgroupScope(allowed, enabled, nil)
+	if err != nil {
+		t.Fatalf("disable syncCgroupScope: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("disabled count = %d, want 0", count)
+	}
+	if err := enabled.Lookup(uint32(0), &on); err != nil {
+		t.Fatalf("lookup disabled: %v", err)
+	}
+	if on != 0 {
+		t.Fatalf("disabled flag = %d, want 0", on)
+	}
+	if err := allowed.Lookup(cgid, &got); !errors.Is(err, ebpf.ErrKeyNotExist) {
+		t.Fatalf("old cgroup id err = %v, want ErrKeyNotExist", err)
+	}
+}

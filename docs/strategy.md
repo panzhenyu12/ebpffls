@@ -114,9 +114,10 @@ files, and `rules` are appended, while scalar fields such as `threshold`,
 `action`, and score values use the later non-empty value.
 
 `cgroup_paths` can scope a merged policy to processes whose `/proc/<tgid>/cgroup`
-path matches one of the configured prefixes. This is currently enforced in the
-Go agent before scoring and blacklist scanning; a kernel-side cgroup map binding
-is still future work.
+path matches one of the configured prefixes. The agent keeps that userspace
+prefix check before scoring and blacklist scanning, and also syncs matching
+cgroup v2 IDs into a BPF map so tracepoint events and path-scoped LSM IOC checks
+can be filtered before they reach the ring buffer.
 
 `network_egress` can enable a first double-extortion signal. The BPF side
 observes IPv4 `connect(2)` attempts, and the Go agent scores non-allowlisted

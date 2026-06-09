@@ -77,7 +77,8 @@ sudo ./bin/ebpffls monitor --config configs/ransomware.yaml --config team.yaml
 
 Set `cgroup_paths` in a policy to scope scoring and blacklist scanning to
 matching `/proc/<tgid>/cgroup` prefixes. Empty `cgroup_paths` means global
-coverage.
+coverage. When configured, the agent also syncs matching cgroup v2 IDs into BPF
+so scoped-out tracepoint events are filtered before reaching the ring buffer.
 
 Debug raw events:
 

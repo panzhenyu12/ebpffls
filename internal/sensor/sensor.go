@@ -7,6 +7,7 @@ import (
 	"hash/fnv"
 	"log"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -224,7 +225,11 @@ func (s *Sensor) ConfigurePolicy(policy config.Policy) error {
 	if err != nil {
 		return fmt.Errorf("sync protected dirs: %w", err)
 	}
-	log.Printf("synced_bpf_policy ioc_extensions=%d ransom_notes=%d protected_dirs=%d", extensions, notes, protected)
+	cgroups, err := syncCgroupScope(s.objects.AllowedCgroups, s.objects.CgroupScopeEnabled, policy.CgroupPaths)
+	if err != nil {
+		return fmt.Errorf("sync cgroup scope: %w", err)
+	}
+	log.Printf("synced_bpf_policy ioc_extensions=%d ransom_notes=%d protected_dirs=%d cgroup_scope=%d", extensions, notes, protected, cgroups)
 	return nil
 }
 
@@ -284,6 +289,57 @@ func syncProtectedDirs(m *ebpf.Map, dirs []string) (int, error) {
 		count++
 	}
 	return count, nil
+}
+
+func syncCgroupScope(allowed *ebpf.Map, enabled *ebpf.Map, paths []string) (int, error) {
+	if err := clearMap(allowed); err != nil {
+		return 0, err
+	}
+	var key uint32
+	var on uint8
+	if len(paths) > 0 {
+		on = 1
+	}
+	if err := enabled.Put(key, on); err != nil {
+		return 0, err
+	}
+	if on == 0 {
+		return 0, nil
+	}
+
+	var one uint8 = 1
+	count := 0
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		cgroupPath := cgroupFSPath(path)
+		info, err := os.Stat(cgroupPath)
+		if err != nil {
+			log.Printf("skip cgroup_path=%q for BPF scope: %v", path, err)
+			continue
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			log.Printf("skip cgroup_path=%q for BPF scope: missing stat data", path)
+			continue
+		}
+		cgid := uint64(stat.Ino)
+		if err := allowed.Put(cgid, one); err != nil {
+			return 0, err
+		}
+		count++
+	}
+	return count, nil
+}
+
+func cgroupFSPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || path == "/" {
+		return "/sys/fs/cgroup"
+	}
+	return filepath.Join("/sys/fs/cgroup", strings.TrimPrefix(path, "/"))
 }
 
 func clearMap(m *ebpf.Map) error {

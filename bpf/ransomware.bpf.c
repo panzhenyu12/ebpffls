@@ -21,6 +21,7 @@ char LICENSE[] SEC("license") = "Dual MIT/GPL";
 #define AF_INET 2
 #define NAME_MAX_LEN 128
 #define MAX_DENTRY_DEPTH 8
+#define MAX_CGROUP_ANCESTORS 32
 #define FNV_OFFSET 14695981039346656037ULL
 #define FNV_PRIME 1099511628211ULL
 
@@ -69,6 +70,20 @@ struct {
 	__type(value, __u8);
 } protected_dirs SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 1024);
+	__type(key, __u64);
+	__type(value, __u8);
+} allowed_cgroups SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, __u8);
+} cgroup_scope_enabled SEC(".maps");
+
 struct pending_open {
 	__s32 dirfd;
 	__s32 flags;
@@ -110,11 +125,35 @@ static __always_inline void count_ringbuf_drop(void)
 		__sync_fetch_and_add(drops, 1);
 }
 
+static __always_inline int cgroup_in_scope(void)
+{
+	__u32 key = 0;
+	__u8 *enabled = bpf_map_lookup_elem(&cgroup_scope_enabled, &key);
+	__u64 cgid;
+
+	if (!enabled || !*enabled)
+		return 1;
+
+	cgid = bpf_get_current_cgroup_id();
+	if (cgid && bpf_map_lookup_elem(&allowed_cgroups, &cgid))
+		return 1;
+
+	for (__u32 i = 0; i < MAX_CGROUP_ANCESTORS; i++) {
+		cgid = bpf_get_current_ancestor_cgroup_id(i);
+		if (cgid && bpf_map_lookup_elem(&allowed_cgroups, &cgid))
+			return 1;
+	}
+	return 0;
+}
+
 static __always_inline struct event *new_event(__u32 type)
 {
 	struct event *e;
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 	__u64 uid_gid = bpf_get_current_uid_gid();
+
+	if (!cgroup_in_scope())
+		return 0;
 
 	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 	if (!e) {
@@ -260,7 +299,7 @@ static __always_inline int suspicious_dentry(struct dentry *dentry)
 
 static __always_inline int suspicious_path_dentry(const struct path *path, struct dentry *dentry)
 {
-	return protected_path(path) && suspicious_dentry(dentry);
+	return cgroup_in_scope() && protected_path(path) && suspicious_dentry(dentry);
 }
 
 static __always_inline void emit_block_event(__u32 op, const char *path)
@@ -529,6 +568,9 @@ int trace_openat(struct trace_event_raw_sys_enter *ctx)
 	struct pending_open pending = {};
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 
+	if (!cgroup_in_scope())
+		return 0;
+
 	const char *filename = (const char *)ctx->args[1];
 	pending.dirfd = (int)ctx->args[0];
 	pending.flags = (int)ctx->args[2];
@@ -566,6 +608,9 @@ int trace_openat2(struct trace_event_raw_sys_enter *ctx)
 	struct pending_open pending = {};
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 	struct open_how *how = (struct open_how *)ctx->args[2];
+
+	if (!cgroup_in_scope())
+		return 0;
 
 	const char *filename = (const char *)ctx->args[1];
 	pending.dirfd = (int)ctx->args[0];
@@ -742,6 +787,9 @@ int trace_dup(struct trace_event_raw_sys_enter *ctx)
 	struct pending_dup pending = {};
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 
+	if (!cgroup_in_scope())
+		return 0;
+
 	pending.oldfd = (int)ctx->args[0];
 	pending.newfd = -1;
 	bpf_map_update_elem(&pending_dups, &pid_tgid, &pending, BPF_ANY);
@@ -774,6 +822,9 @@ int trace_dup2(struct trace_event_raw_sys_enter *ctx)
 {
 	struct pending_dup pending = {};
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
+
+	if (!cgroup_in_scope())
+		return 0;
 
 	pending.oldfd = (int)ctx->args[0];
 	pending.newfd = (int)ctx->args[1];
@@ -808,6 +859,9 @@ int trace_dup3(struct trace_event_raw_sys_enter *ctx)
 	struct pending_dup pending = {};
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 
+	if (!cgroup_in_scope())
+		return 0;
+
 	pending.oldfd = (int)ctx->args[0];
 	pending.newfd = (int)ctx->args[1];
 	bpf_map_update_elem(&pending_dups, &pid_tgid, &pending, BPF_ANY);
@@ -841,6 +895,9 @@ int trace_fcntl(struct trace_event_raw_sys_enter *ctx)
 	struct pending_dup pending = {};
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 	int cmd = (int)ctx->args[1];
+
+	if (!cgroup_in_scope())
+		return 0;
 
 	if (cmd != F_DUPFD && cmd != F_DUPFD_CLOEXEC)
 		return 0;
