@@ -65,7 +65,7 @@
 | ID | 任务 | 产出 |
 |----|------|------|
 | 2.1 | `procFeatures`：`distinct_paths`、`open_write_pairs`、`rename_suffix_count` | 已完成：alert JSON 输出 L2 特征向量 |
-| 2.2 | yaml 支持 `rules[]`（when 组合 + action） | L3 可组合策略 |
+| 2.2 | yaml 支持 `rules[]`（when 组合 + action） | 已完成：基于特征阈值的 rules[] DSL |
 | 2.3 | 加密状态机：`SCAN`→`STAGE`→`FINALIZE`（先实现 STAGE/FINALIZE） | 模式识别 |
 | 2.4 | trust 模型升级：comm + exe 路径 + uid；备份破坏不减分 | 已完成 |
 | 2.5 | ftruncate fd→path 解析 | 已完成：复用 open/openat/openat2 fd→path 缓存 |
@@ -75,7 +75,8 @@
 
 - [ ] 可用 yaml 定义一条「distinct_paths > N → block」规则
 - [x] 告警输出 `distinct_paths`、`open_write_pairs`、`rename_suffix_count` 特征向量
-- [ ] 不改名加密可通过扇出规则触发
+- [x] 可用 yaml 定义一条「distinct_paths >= N → block/kill」规则
+- [x] 不改名加密可通过扇出规则触发
 - [x] 伪装 comm 但 exe 路径不在 trust 列表仍计分
 - [x] trusted 进程破坏 backup_dirs 仍计分并阻断
 

@@ -109,3 +109,4 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 | 2026-06-09 | 完成 Phase 1.7：用户态状态空闲淘汰与 ringbuf drop 增量日志 |
 | 2026-06-09 | 完成 Phase 1.1/1.2：yaml IOC 同步 BPF map，path-based LSM IOC 增加 protected dir 作用域 |
 | 2026-06-09 | 完成 Phase 2.1：alert JSON 输出 procFeatures 特征向量 |
+| 2026-06-09 | 完成 Phase 2.2：yaml rules[] 支持特征阈值规则并覆盖不改名扇出阻断 |

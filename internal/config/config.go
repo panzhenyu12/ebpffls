@@ -21,6 +21,15 @@ type Scores struct {
 	ExecAfterBlocked    int `yaml:"exec_after_blocked"`
 }
 
+type Rule struct {
+	Name    string `yaml:"name"`
+	Feature string `yaml:"feature"`
+	Op      string `yaml:"op"`
+	Value   int    `yaml:"value"`
+	Action  string `yaml:"action"`
+	Reason  string `yaml:"reason"`
+}
+
 type Policy struct {
 	Name                 string        `yaml:"name"`
 	Description          string        `yaml:"description"`
@@ -42,6 +51,7 @@ type Policy struct {
 	SuspiciousExtensions []string      `yaml:"suspicious_extensions"`
 	RansomNoteNames      []string      `yaml:"ransom_note_names"`
 	Scores               Scores        `yaml:"scores"`
+	Rules                []Rule        `yaml:"rules"`
 }
 
 func Load(path string) (Policy, error) {
@@ -108,5 +118,42 @@ func Load(path string) (Policy, error) {
 	if p.Scores.ExecAfterBlocked == 0 {
 		p.Scores.ExecAfterBlocked = 10
 	}
+	for i := range p.Rules {
+		r := &p.Rules[i]
+		r.Feature = strings.ToLower(strings.TrimSpace(r.Feature))
+		r.Op = strings.TrimSpace(r.Op)
+		r.Action = strings.ToLower(strings.TrimSpace(r.Action))
+		if r.Action == "" {
+			r.Action = p.Action
+		}
+		if r.Reason == "" {
+			r.Reason = r.Name
+		}
+		if err := validateRule(*r); err != nil {
+			return Policy{}, fmt.Errorf("validate rule %d: %w", i, err)
+		}
+	}
 	return p, nil
+}
+
+func validateRule(rule Rule) error {
+	switch rule.Feature {
+	case "distinct_paths", "open_write_pairs", "rename_suffix_count":
+	default:
+		return fmt.Errorf("unsupported feature %q", rule.Feature)
+	}
+	switch rule.Op {
+	case ">", ">=", "==", "<=", "<":
+	default:
+		return fmt.Errorf("unsupported op %q", rule.Op)
+	}
+	if rule.Value < 0 {
+		return fmt.Errorf("value must be >= 0")
+	}
+	switch rule.Action {
+	case "log", "deny", "kill":
+	default:
+		return fmt.Errorf("unsupported action %q", rule.Action)
+	}
+	return nil
 }

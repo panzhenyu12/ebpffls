@@ -119,6 +119,21 @@ Alerts include a `features` object with `distinct_paths`, `open_write_pairs`,
 and `rename_suffix_count`. These L2 features are produced inside the current
 sliding window and are ready for the upcoming rules DSL.
 
+YAML can define feature-threshold rules:
+
+```yaml
+rules:
+  - name: fanout-distinct-paths
+    feature: distinct_paths
+    op: ">="
+    value: 50
+    action: kill
+    reason: distinct path fanout rule
+```
+
+Supported features are `distinct_paths`, `open_write_pairs`, and
+`rename_suffix_count`. Supported operators are `>`, `>=`, `==`, `<=`, and `<`.
+
 **Not yet implemented:** `exec_after_blocked` as a score-only rule.
 
 ## Architecture diagram

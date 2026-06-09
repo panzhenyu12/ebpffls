@@ -173,3 +173,33 @@ func TestPruneResetsFeatures(t *testing.T) {
 		t.Fatalf("openWritePaths len = %d, want 0", len(state.openWritePaths))
 	}
 }
+
+func TestRuleMatchesFeatureThreshold(t *testing.T) {
+	rule := config.Rule{Feature: "distinct_paths", Op: ">=", Value: 3, Action: "kill"}
+	if !ruleMatches(procFeatures{DistinctPaths: 3}, rule) {
+		t.Fatal("rule did not match equal threshold")
+	}
+	if ruleMatches(procFeatures{DistinctPaths: 2}, rule) {
+		t.Fatal("rule matched below threshold")
+	}
+}
+
+func TestMatchRuleReturnsFirstMatchingRule(t *testing.T) {
+	a := &Agent{
+		policy: config.Policy{
+			Rules: []config.Rule{
+				{Feature: "open_write_pairs", Op: ">=", Value: 9, Action: "kill", Reason: "too many opens"},
+				{Feature: "distinct_paths", Op: ">=", Value: 2, Action: "deny", Reason: "fanout rule"},
+			},
+		},
+	}
+	state := &procState{Features: procFeatures{DistinctPaths: 2, OpenWritePairs: 1}}
+
+	matched, reason, action := a.matchRule(state)
+	if !matched {
+		t.Fatal("expected rule match")
+	}
+	if reason != "fanout rule" || action != "deny" {
+		t.Fatalf("reason/action = %q/%q, want fanout rule/deny", reason, action)
+	}
+}

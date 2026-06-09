@@ -198,7 +198,7 @@ func (a *Agent) handle(ev sensor.Event) {
 			Score:  a.policy.Threshold,
 			Reason: reason,
 		})
-		a.alertAndEnforce(state, reason, sensor.BlockActionKill)
+		a.alertAndEnforce(state, reason, "kill")
 		return
 	}
 
@@ -229,6 +229,15 @@ func (a *Agent) handle(ev sensor.Event) {
 		state.Score += a.policy.Scores.HighRateBonus
 		state.HighRateScored = true
 		state.Reasons = appendReason(state.Reasons, "high-rate file mutation")
+	}
+
+	if matched, reason, action := a.matchRule(state); matched && !state.Blocked {
+		if action != "log" {
+			state.Blocked = true
+		}
+		state.Reasons = appendReason(state.Reasons, reason)
+		a.alertAndEnforce(state, reason, action)
+		return
 	}
 
 	if state.Score >= a.policy.Threshold && !state.Blocked {
@@ -667,6 +676,48 @@ func (a *Agent) ringbufDropDelta(current uint64) uint64 {
 	return current - previous
 }
 
+func (a *Agent) matchRule(state *procState) (bool, string, string) {
+	for _, rule := range a.policy.Rules {
+		if !ruleMatches(state.Features, rule) {
+			continue
+		}
+		reason := rule.Reason
+		if reason == "" {
+			reason = "feature rule"
+		}
+		return true, reason, rule.Action
+	}
+	return false, "", ""
+}
+
+func ruleMatches(features procFeatures, rule config.Rule) bool {
+	var got int
+	switch rule.Feature {
+	case "distinct_paths":
+		got = features.DistinctPaths
+	case "open_write_pairs":
+		got = features.OpenWritePairs
+	case "rename_suffix_count":
+		got = features.RenameSuffixCount
+	default:
+		return false
+	}
+	switch rule.Op {
+	case ">":
+		return got > rule.Value
+	case ">=":
+		return got >= rule.Value
+	case "==":
+		return got == rule.Value
+	case "<=":
+		return got <= rule.Value
+	case "<":
+		return got < rule.Value
+	default:
+		return false
+	}
+}
+
 func (a *Agent) score(ev sensor.Event) (int, string) {
 	path := pickPath(ev)
 	protected := a.inProtectedScope(path)
@@ -756,18 +807,14 @@ func (a *Agent) backupSensitiveEvent(ev sensor.Event) bool {
 
 func (a *Agent) block(state *procState) {
 	state.Blocked = true
-	action := sensor.BlockActionDeny
-	if a.policy.Action == "kill" {
-		action = sensor.BlockActionKill
-	}
-	a.alertAndEnforce(state, "behavior threshold", action)
+	a.alertAndEnforce(state, "behavior threshold", a.policy.Action)
 }
 
-func (a *Agent) alertAndEnforce(state *procState, reason string, action uint32) {
+func (a *Agent) alertAndEnforce(state *procState, reason string, action string) {
 	al := alert{
 		At:        time.Now(),
 		Policy:    a.policy.Name,
-		Action:    actionName(action),
+		Action:    normalizeAction(action),
 		DryRun:    a.options.DryRun,
 		TGID:      state.TGID,
 		PID:       state.PID,
@@ -783,10 +830,10 @@ func (a *Agent) alertAndEnforce(state *procState, reason string, action uint32) 
 	data, _ := json.Marshal(al)
 	log.Printf("alert=%s", data)
 
-	if a.options.DryRun || a.policy.Action == "log" {
+	if a.options.DryRun || action == "log" {
 		return
 	}
-	a.enforceTGID(state.TGID, action, reason)
+	a.enforceTGID(state.TGID, blockAction(action), reason)
 }
 
 func (a *Agent) inProtectedScope(path string) bool {
@@ -943,6 +990,13 @@ func normalizeAction(action string) string {
 	default:
 		return fmt.Sprintf("unknown(%s)", action)
 	}
+}
+
+func blockAction(action string) uint32 {
+	if action == "kill" {
+		return sensor.BlockActionKill
+	}
+	return sensor.BlockActionDeny
 }
 
 func eventName(t uint32) string {

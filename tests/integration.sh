@@ -328,6 +328,40 @@ PY
   stop_agent
 }
 
+test_feature_rule_distinct_paths_kills() {
+  log "rules DSL kills no-rename fanout by distinct_paths"
+  local dir="${TMP_DIR}/rule-fanout"
+  local bl="${TMP_DIR}/rule-fanout-blacklist.txt"
+  local policy="${TMP_DIR}/rule-fanout.yaml"
+  local agent_log="${TMP_DIR}/rule-fanout-agent.log"
+  local sim="${TMP_DIR}/rule-fanout.py"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" rule-fanout-test 1000 kill "${dir}" "${bl}"
+  cat >>"${policy}" <<'YAML'
+rules:
+  - name: fanout-distinct-paths
+    feature: distinct_paths
+    op: ">="
+    value: 5
+    action: kill
+    reason: distinct path fanout rule
+YAML
+  start_agent "${policy}" "${agent_log}"
+  cat >"${sim}" <<PY
+import time
+base = "${dir}"
+for i in range(100):
+    with open(f"{base}/fanout-{i}.txt", "w") as f:
+        f.write("data")
+    time.sleep(0.02)
+print("survived")
+PY
+  expect_killed "distinct_paths rule" python3 "${sim}"
+  wait_for_log "${agent_log}" 'distinct path fanout rule' "distinct_paths rule"
+  stop_agent
+}
+
 test_fd_write_path_scoring_kills() {
   log "fd write path scoring kills repeated writes to protected fd"
   local dir="${TMP_DIR}/fd-write"
@@ -773,6 +807,7 @@ main() {
   test_bpf_ioc_policy_sync_and_scope
   test_dry_run_survives
   test_behavior_threshold_kills
+  test_feature_rule_distinct_paths_kills
   test_fd_write_path_scoring_kills
   test_fd_lifecycle_tracking
   test_relative_dirfd_path_scoring_kills
