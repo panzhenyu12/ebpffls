@@ -20,7 +20,7 @@ than static signatures. ebpffls therefore uses **four complementary tracks**:
 | 1 — IOC fast path | YAML-synced BPF IOC maps plus scoped BPF LSM hard deny on path-based hooks, when active | Suffix renames, ransom notes |
 | 2 — Behavior slow path | Sliding-window score on protected paths | Zero-day bulk encryption |
 | 3 — Hash blacklist | SHA-256 of executables in userspace | Known samples |
-| 4 — Enforcement | kprobes on marked TGIDs; LSM deny when active | Stopping an already-identified process |
+| 4 — Enforcement | kprobes on marked TGIDs; `bpf_override_return` deny when supported; LSM deny when active | Stopping an already-identified process |
 
 See [ransomware-call-abstraction.md](./ransomware-call-abstraction.md) for how
 syscalls map to semantic ransomware operations.
@@ -50,7 +50,7 @@ as a low-confidence evasion signal instead of a standalone block reason.
 | Action | Behavior |
 |--------|----------|
 | `log` | Emit JSON alert only; do not write `blocked_tgids`. |
-| `deny` | Write TGID to map; BPF LSM returns `-EPERM` only when `bpf` LSM is active. |
+| `deny` | Write TGID to map; kprobe `bpf_override_return(-EPERM)` rejects marked syscalls when kernel error injection allows it; BPF LSM also returns `-EPERM` when active. |
 | `kill` | Write TGID with kill action; kprobes send `SIGKILL` on sensitive syscalls; userspace also signals the process group leader. |
 
 **Defaults today**
@@ -72,9 +72,11 @@ full path-scoped IOC matching there exceeds verifier complexity on the reference
 kernel; open/write behavior remains covered by tracepoint scoring.
 
 On the current reference server, `CONFIG_BPF_LSM=y` is available but `bpf` is
-not listed in `/sys/kernel/security/lsm`, so the reliable enforcement path is
-userspace immediate SIGKILL plus x86_64 kprobe SIGKILL. Enabling BPF LSM at boot
-is required for true `deny` and IOC hard-deny behavior.
+not listed in `/sys/kernel/security/lsm`, so path-based LSM IOC hard-deny is not
+active. The kernel does support `CONFIG_BPF_KPROBE_OVERRIDE` and syscall error
+injection, so marked-TGID `deny` uses kprobe `bpf_override_return(-EPERM)`.
+Enabling BPF LSM at boot is still required for path-scoped IOC hard-deny
+behavior before userspace scoring marks a process.
 
 ## Hash blacklist
 

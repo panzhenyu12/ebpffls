@@ -160,7 +160,7 @@ static __always_inline int deny_or_kill(struct block_entry *entry)
 	return -EPERM;
 }
 
-static __always_inline int kill_blocked_syscall(void)
+static __always_inline int enforce_blocked_syscall(struct pt_regs *ctx)
 {
 	struct block_entry *entry = current_block_entry();
 
@@ -168,8 +168,9 @@ static __always_inline int kill_blocked_syscall(void)
 		return 0;
 	if (entry->action == BLOCK_ACTION_KILL) {
 		bpf_send_signal(SIGKILL);
+		return 0;
 	}
-	return 0;
+	return bpf_override_return(ctx, -EPERM);
 }
 
 static __always_inline char lower_char(char c)
@@ -283,103 +284,103 @@ int trace_execve(struct trace_event_raw_sys_enter *ctx)
 SEC("kprobe/__x64_sys_openat")
 int kp_override_openat(struct pt_regs *ctx)
 {
-	return kill_blocked_syscall();
+	return enforce_blocked_syscall(ctx);
 }
 
 SEC("kprobe/__x64_sys_openat2")
 int kp_override_openat2(struct pt_regs *ctx)
 {
-	return kill_blocked_syscall();
+	return enforce_blocked_syscall(ctx);
 }
 
 SEC("kprobe/__x64_sys_rename")
 int kp_override_rename(struct pt_regs *ctx)
 {
-	return kill_blocked_syscall();
+	return enforce_blocked_syscall(ctx);
 }
 
 SEC("kprobe/__x64_sys_renameat")
 int kp_override_renameat(struct pt_regs *ctx)
 {
-	return kill_blocked_syscall();
+	return enforce_blocked_syscall(ctx);
 }
 
 SEC("kprobe/__x64_sys_renameat2")
 int kp_override_renameat2(struct pt_regs *ctx)
 {
-	return kill_blocked_syscall();
+	return enforce_blocked_syscall(ctx);
 }
 
 SEC("kprobe/__x64_sys_unlink")
 int kp_override_unlink(struct pt_regs *ctx)
 {
-	return kill_blocked_syscall();
+	return enforce_blocked_syscall(ctx);
 }
 
 SEC("kprobe/__x64_sys_unlinkat")
 int kp_override_unlinkat(struct pt_regs *ctx)
 {
-	return kill_blocked_syscall();
+	return enforce_blocked_syscall(ctx);
 }
 
 SEC("kprobe/__x64_sys_truncate")
 int kp_override_truncate(struct pt_regs *ctx)
 {
-	return kill_blocked_syscall();
+	return enforce_blocked_syscall(ctx);
 }
 
 SEC("kprobe/__x64_sys_ftruncate")
 int kp_override_ftruncate(struct pt_regs *ctx)
 {
-	return kill_blocked_syscall();
+	return enforce_blocked_syscall(ctx);
 }
 
 SEC("kprobe/__x64_sys_execve")
 int kp_override_execve(struct pt_regs *ctx)
 {
-	return kill_blocked_syscall();
+	return enforce_blocked_syscall(ctx);
 }
 
 SEC("kprobe/__x64_sys_write")
 int kp_override_write(struct pt_regs *ctx)
 {
-	return kill_blocked_syscall();
+	return enforce_blocked_syscall(ctx);
 }
 
 SEC("kprobe/__x64_sys_pwrite64")
 int kp_override_pwrite64(struct pt_regs *ctx)
 {
-	return kill_blocked_syscall();
+	return enforce_blocked_syscall(ctx);
 }
 
 SEC("kprobe/__x64_sys_writev")
 int kp_override_writev(struct pt_regs *ctx)
 {
-	return kill_blocked_syscall();
+	return enforce_blocked_syscall(ctx);
 }
 
 SEC("kprobe/__x64_sys_copy_file_range")
 int kp_override_copy_file_range(struct pt_regs *ctx)
 {
-	return kill_blocked_syscall();
+	return enforce_blocked_syscall(ctx);
 }
 
 SEC("kprobe/__x64_sys_getdents64")
 int kp_override_getdents64(struct pt_regs *ctx)
 {
-	return kill_blocked_syscall();
+	return enforce_blocked_syscall(ctx);
 }
 
 SEC("kprobe/__x64_sys_mmap")
 int kp_override_mmap(struct pt_regs *ctx)
 {
-	return kill_blocked_syscall();
+	return enforce_blocked_syscall(ctx);
 }
 
 SEC("kprobe/__x64_sys_io_uring_enter")
 int kp_override_io_uring_enter(struct pt_regs *ctx)
 {
-	return kill_blocked_syscall();
+	return enforce_blocked_syscall(ctx);
 }
 
 SEC("lsm/file_open")

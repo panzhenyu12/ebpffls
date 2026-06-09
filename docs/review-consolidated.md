@@ -12,7 +12,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 1. **IOC 快轨** — BPF LSM 可疑名即时 `-EPERM`（要求 active BPF LSM）
 2. **行为慢轨** — 保护域 syscall 滑动窗口评分
 3. **哈希轨** — SHA256 黑名单（exec + `/proc` 扫描）
-4. **执法轨** — 已标记 TGID：x86_64 kprobe SIGKILL；LSM 在 active 时补充 deny/kill
+4. **执法轨** — 已标记 TGID：kprobe SIGKILL 或 `bpf_override_return(-EPERM)` deny；LSM 在 active 时补充 IOC hard-deny
 
 定位：**主机文件系统层**，非完整 EDR。
 
@@ -68,7 +68,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 
 1. BPF IOC 已从 yaml 同步到 map，path-based LSM 硬规则已加 `protected_dirs` inode 作用域；硬拒绝仍依赖 active BPF LSM
 2. `EventWrite` 已基于 agent fd→path 缓存计分，且跟踪 close/dup/fcntl 复制、相对 dirfd 与空闲淘汰；mmap 已做 fd→path 评分，io_uring 当前仅做上下文关联计分
-3. kprobe 仅 `bpf_send_signal`，不 `bpf_override_return`
+3. deny 动作已用 kprobe `bpf_override_return(-EPERM)`；仍依赖内核 error injection allowlist
 4. kprobe 符号仅 x86_64
 5. `exec_after_blocked` 作为评分规则未实现；kill 传播已实现
 6. Agent 无自保护
@@ -117,3 +117,4 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 | 2026-06-09 | 完成 Phase 3.5：getdents64 目录扫描采样与阻断回归 |
 | 2026-06-09 | 完成 Phase 3.1：writable shared mmap 采样与阻断回归 |
 | 2026-06-09 | 完成 Phase 3.6：io_uring_enter 基础观测与集成回归 |
+| 2026-06-09 | 完成 Phase 3.3/3.4：多架构 kprobe 符号候选与 deny override 回归 |

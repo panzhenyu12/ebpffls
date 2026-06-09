@@ -12,7 +12,7 @@
 - **轨1** BPF LSM 文件名硬阻断（可疑扩展名、赎金信；要求 active BPF LSM）
 - **轨2** 用户态滑动窗口评分（保护域 open/write/rename/unlink/truncate）
 - **轨3** SHA256 黑名单（exec 事件 + `/proc` 周期扫描）
-- **轨4** 对已标记 TGID：x86_64 kprobe SIGKILL；active BPF LSM 时提供 deny/kill
+- **轨4** 对已标记 TGID：kprobe SIGKILL 或 `bpf_override_return(-EPERM)` deny；active BPF LSM 时提供 IOC hard-deny
 
 ### 已知缺口
 
@@ -21,7 +21,7 @@
 - `procState`、fd→path 与 blocked lineage 缓存已按空闲 TTL 定期淘汰；ringbuf reserve 失败已有内核计数和用户态增量日志
 - BPF IOC 已从 yaml 同步到 map；path-based LSM IOC 已受 `protected_dirs` inode 作用域约束
 - blocked lineage exec 已做 kill 传播；`exec_after_blocked` 作为评分规则未实现
-- kprobe attach 已按架构选择候选符号；无 `bpf_override_return` 真 deny
+- kprobe attach 已按架构选择候选符号；deny 动作已用 `bpf_override_return(-EPERM)` 同步拒绝
 - io_uring 已有基础 `io_uring_enter` 观测；不解析 SQE 内容，仍属于弱覆盖
 
 ---
@@ -91,7 +91,7 @@
 | 3.1 | `mmap` LSM `file_mmap` 或等效 trace | 已完成：writable shared mmap fd→path 评分与 kprobe kill |
 | 3.2 | `copy_file_range` tracepoint | 已完成：目标 fd→path 评分与 kprobe kill |
 | 3.3 | kprobe 符号多架构（arm64 `__arm64_sys_*`）或 fentry 迁移 | 已完成：按 GOARCH 选择 `__x64_sys_*`/`__arm64_sys_*` 并 fallback `__se_sys_*` |
-| 3.4 | `bpf_override_return(-EPERM)` deny 路径与 kill 路径分离 | 真同步 deny |
+| 3.4 | `bpf_override_return(-EPERM)` deny 路径与 kill 路径分离 | 已完成：deny 同步返回 `-EPERM`，kill 保持 `SIGKILL` |
 | 3.5 | `getdents64` 采样（可选阈值） | 已完成：目录 fd→path 评分与 kprobe kill |
 | 3.6 | io_uring 基础观测 | 已完成：`io_uring_enter` 采样，保护域活动后的 io_uring 行为计分；不解析 SQE |
 

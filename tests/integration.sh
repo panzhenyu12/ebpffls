@@ -502,6 +502,37 @@ C
   stop_agent
 }
 
+test_deny_override_rejects_marked_syscall() {
+  log "deny action uses bpf_override_return for marked syscalls"
+  local dir="${TMP_DIR}/deny-override"
+  local bl="${TMP_DIR}/deny-override-blacklist.txt"
+  local policy="${TMP_DIR}/deny-override.yaml"
+  local agent_log="${TMP_DIR}/deny-override-agent.log"
+  local sim="${TMP_DIR}/deny_override.py"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" deny-override-test 1 deny "${dir}" "${bl}"
+  start_agent "${policy}" "${agent_log}"
+  cat >"${sim}" <<PY
+import errno, time
+
+with open("${dir}/mark.txt", "w") as f:
+    f.write("mark")
+time.sleep(1.0)
+try:
+    with open("${dir}/blocked.txt", "w") as f:
+        f.write("blocked")
+except OSError as e:
+    if e.errno == errno.EPERM:
+        raise SystemExit(0)
+    raise
+raise SystemExit(2)
+PY
+  expect_survives "deny override" python3 "${sim}"
+  wait_for_log "${agent_log}" 'enforced action=deny' "deny enforcement"
+  stop_agent
+}
+
 test_fd_write_path_scoring_kills() {
   log "fd write path scoring kills repeated writes to protected fd"
   local dir="${TMP_DIR}/fd-write"
@@ -911,31 +942,25 @@ test_blocked_lineage_exec_kills_child() {
   local policy="${TMP_DIR}/lineage.yaml"
   local agent_log="${TMP_DIR}/lineage-agent.log"
   local sim="${TMP_DIR}/lineage.py"
-  local status_file="${TMP_DIR}/lineage.status"
   mkdir -p "${dir}"
   : >"${bl}"
   write_policy "${policy}" lineage-test 1 deny "${dir}" "${bl}" 30s
   start_agent "${policy}" "${agent_log}"
   cat >"${sim}" <<PY
-import os, time
-with open("${dir}/mark-parent.txt", "w") as f:
-    f.write("data")
+import os, sys, time
+try:
+    with open("${dir}/mark-parent.txt", "w") as f:
+        f.write("data")
+except PermissionError:
+    pass
 time.sleep(1.0)
 pid = os.fork()
 if pid == 0:
     os.execv("${BADLOOP}", ["${BADLOOP}"])
 _, status = os.waitpid(pid, 0)
-with open("${status_file}", "w") as f:
-    f.write(str(status))
-PY
-  expect_survives "lineage parent" python3 "${sim}"
-  local status
-  status="$(cat "${status_file}")"
-  python3 - <<PY
-import os, sys
-status = int("${status}")
 sys.exit(0 if os.WIFSIGNALED(status) and os.WTERMSIG(status) == 9 else 1)
 PY
+  expect_survives "lineage parent" python3 "${sim}"
   wait_for_log "${agent_log}" 'exec by blocked lineage' "lineage"
   stop_agent
 }
@@ -952,6 +977,7 @@ main() {
   test_getdents64_scan_scores_and_kills
   test_writable_mmap_scores_and_kills
   test_io_uring_after_protected_activity_scores
+  test_deny_override_rejects_marked_syscall
   test_fd_write_path_scoring_kills
   test_fd_lifecycle_tracking
   test_relative_dirfd_path_scoring_kills
