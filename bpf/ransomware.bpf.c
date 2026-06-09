@@ -361,6 +361,12 @@ int kp_override_copy_file_range(struct pt_regs *ctx)
 	return kill_blocked_syscall();
 }
 
+SEC("kprobe/__x64_sys_getdents64")
+int kp_override_getdents64(struct pt_regs *ctx)
+{
+	return kill_blocked_syscall();
+}
+
 SEC("lsm/file_open")
 int BPF_PROG(enforce_file_open, struct file *file)
 {
@@ -630,6 +636,19 @@ int trace_close(struct trace_event_raw_sys_enter *ctx)
 		return 0;
 
 	e->arg0 = (int)ctx->args[0];
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_getdents64")
+int trace_getdents64(struct trace_event_raw_sys_enter *ctx)
+{
+	struct event *e = new_event(EVENT_SCAN);
+	if (!e)
+		return 0;
+
+	e->arg0 = (int)ctx->args[0];
+	e->size = (__u64)ctx->args[2];
 	bpf_ringbuf_submit(e, 0);
 	return 0;
 }

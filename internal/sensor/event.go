@@ -17,6 +17,7 @@ const (
 	EventBlock
 	EventClose
 	EventDup
+	EventScan
 )
 
 const (
@@ -96,6 +97,8 @@ func (e Event) TypeName() string {
 		return "close"
 	case EventDup:
 		return "dup"
+	case EventScan:
+		return "scan"
 	default:
 		return fmt.Sprintf("unknown(%d)", e.Type)
 	}

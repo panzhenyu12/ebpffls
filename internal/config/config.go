@@ -19,6 +19,7 @@ type Scores struct {
 	BackupDestroy       int `yaml:"backup_destroy"`
 	HighRateBonus       int `yaml:"high_rate_bonus"`
 	ExecAfterBlocked    int `yaml:"exec_after_blocked"`
+	Scan                int `yaml:"scan"`
 }
 
 type Rule struct {
@@ -117,6 +118,9 @@ func Load(path string) (Policy, error) {
 	}
 	if p.Scores.ExecAfterBlocked == 0 {
 		p.Scores.ExecAfterBlocked = 10
+	}
+	if p.Scores.Scan == 0 {
+		p.Scores.Scan = 1
 	}
 	for i := range p.Rules {
 		r := &p.Rules[i]

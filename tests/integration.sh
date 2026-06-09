@@ -94,6 +94,7 @@ scores:
   backup_destroy: 20
   high_rate_bonus: 15
   exec_after_blocked: 10
+  scan: 1
 YAML
 }
 
@@ -212,6 +213,7 @@ scores:
   backup_destroy: 20
   high_rate_bonus: 15
   exec_after_blocked: 10
+  scan: 1
 YAML
   start_agent "${policy}" "${agent_log}" dry-run
   wait_for_log "${agent_log}" 'synced_bpf_policy ioc_extensions=1 ransom_notes=1 protected_dirs=1' "BPF IOC policy sync"
@@ -368,6 +370,33 @@ print("survived")
 PY
   expect_killed "distinct_paths rule" python3 "${sim}"
   wait_for_log "${agent_log}" 'distinct path fanout rule' "distinct_paths rule"
+  stop_agent
+}
+
+test_getdents64_scan_scores_and_kills() {
+  log "getdents64 directory scan scores and kills"
+  local dir="${TMP_DIR}/scan"
+  local bl="${TMP_DIR}/scan-blacklist.txt"
+  local policy="${TMP_DIR}/scan.yaml"
+  local agent_log="${TMP_DIR}/scan-agent.log"
+  local sim="${TMP_DIR}/scan.py"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  for i in $(seq 1 20); do
+    printf 'x' >"${dir}/f${i}.txt"
+  done
+  write_policy "${policy}" scan-test 2 kill "${dir}" "${bl}"
+  start_agent "${policy}" "${agent_log}"
+  cat >"${sim}" <<PY
+import os, time
+base = "${dir}"
+for _ in range(100):
+    os.listdir(base)
+    time.sleep(0.02)
+print("survived")
+PY
+  expect_killed "getdents64 scan scoring" python3 "${sim}"
+  wait_for_log "${agent_log}" 'directory scan in protected scope' "getdents64 scan"
   stop_agent
 }
 
@@ -818,6 +847,7 @@ main() {
   test_dry_run_survives
   test_behavior_threshold_kills
   test_feature_rule_distinct_paths_kills
+  test_getdents64_scan_scores_and_kills
   test_fd_write_path_scoring_kills
   test_fd_lifecycle_tracking
   test_relative_dirfd_path_scoring_kills

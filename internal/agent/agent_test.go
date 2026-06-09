@@ -224,6 +224,31 @@ func TestRuleMatchesFeatureThreshold(t *testing.T) {
 	}
 }
 
+func TestScoreDirectoryScanUsesFDPath(t *testing.T) {
+	a := &Agent{
+		policy: config.Policy{
+			ProtectedDirs: []string{"/protected"},
+			Scores:        config.Scores{Scan: 2},
+		},
+		fdPaths: map[fdKey]fdState{
+			{TGID: 42, FD: 3}: {Path: "/protected"},
+		},
+	}
+
+	score, reason := a.score(sensor.Event{
+		Type: sensor.EventScan,
+		TGID: 42,
+		Arg0: 3,
+	})
+
+	if score != 2 {
+		t.Fatalf("score = %d, want 2", score)
+	}
+	if reason != "directory scan in protected scope" {
+		t.Fatalf("reason = %q", reason)
+	}
+}
+
 func TestMatchRuleReturnsFirstMatchingRule(t *testing.T) {
 	a := &Agent{
 		policy: config.Policy{

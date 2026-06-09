@@ -67,6 +67,7 @@ func New(policy config.Policy) (*Sensor, error) {
 		{"syscalls", "sys_enter_pwrite64", objs.TracePwrite64},
 		{"syscalls", "sys_enter_writev", objs.TraceWritev},
 		{"syscalls", "sys_enter_copy_file_range", objs.TraceCopyFileRange},
+		{"syscalls", "sys_enter_getdents64", objs.TraceGetdents64},
 		{"syscalls", "sys_enter_close", objs.TraceClose},
 		{"syscalls", "sys_enter_dup", objs.TraceDup},
 		{"syscalls", "sys_exit_dup", objs.TraceDupExit},
@@ -131,6 +132,7 @@ func New(policy config.Policy) (*Sensor, error) {
 		{"__x64_sys_pwrite64", objs.KpOverridePwrite64},
 		{"__x64_sys_writev", objs.KpOverrideWritev},
 		{"__x64_sys_copy_file_range", objs.KpOverrideCopyFileRange},
+		{"__x64_sys_getdents64", objs.KpOverrideGetdents64},
 	}
 	for _, kp := range kprobes {
 		l, err := link.Kprobe(kp.symbol, kp.prog, nil)
