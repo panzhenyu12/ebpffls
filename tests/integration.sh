@@ -339,8 +339,10 @@ print("survived")
 PY
   expect_killed "behavior threshold" python3 "${sim}"
   wait_for_log "${agent_log}" 'behavior threshold' "behavior threshold"
+  wait_for_log "${agent_log}" '"schema_version":"v1"' "alert schema version"
+  wait_for_log "${agent_log}" '"kind":"ransomware_alert"' "alert kind"
   wait_for_log "${agent_log}" '"features":{' "behavior features"
-  wait_for_log_for "${agent_log}" 'metrics={"alerts":' "metrics log" 120
+  wait_for_log_for "${agent_log}" '"kind":"ebpffls_metrics"' "metrics log" 120
   stop_agent
 }
 

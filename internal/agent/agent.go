@@ -85,6 +85,8 @@ type procFeatures struct {
 }
 
 type metrics struct {
+	SchemaVersion     string `json:"schema_version"`
+	Kind              string `json:"kind"`
 	Alerts            uint64 `json:"alerts"`
 	Blocks            uint64 `json:"blocks"`
 	BlacklistMatches  uint64 `json:"blacklist_matches"`
@@ -101,20 +103,22 @@ type scoredEvent struct {
 }
 
 type alert struct {
-	At        time.Time     `json:"at"`
-	Policy    string        `json:"policy"`
-	Action    string        `json:"action"`
-	DryRun    bool          `json:"dry_run"`
-	TGID      uint32        `json:"tgid"`
-	PID       uint32        `json:"pid"`
-	PPID      uint32        `json:"ppid"`
-	UID       uint32        `json:"uid"`
-	Comm      string        `json:"comm"`
-	Score     int           `json:"score"`
-	Threshold int           `json:"threshold"`
-	Reasons   []string      `json:"reasons"`
-	Features  procFeatures  `json:"features"`
-	Events    []scoredEvent `json:"events"`
+	SchemaVersion string        `json:"schema_version"`
+	Kind          string        `json:"kind"`
+	At            time.Time     `json:"at"`
+	Policy        string        `json:"policy"`
+	Action        string        `json:"action"`
+	DryRun        bool          `json:"dry_run"`
+	TGID          uint32        `json:"tgid"`
+	PID           uint32        `json:"pid"`
+	PPID          uint32        `json:"ppid"`
+	UID           uint32        `json:"uid"`
+	Comm          string        `json:"comm"`
+	Score         int           `json:"score"`
+	Threshold     int           `json:"threshold"`
+	Reasons       []string      `json:"reasons"`
+	Features      procFeatures  `json:"features"`
+	Events        []scoredEvent `json:"events"`
 }
 
 func New(policy config.Policy, s *sensor.Sensor, options Options) *Agent {
@@ -132,6 +136,10 @@ func New(policy config.Policy, s *sensor.Sensor, options Options) *Agent {
 		blacklist: bl,
 		hashes:    newHashCache(),
 		hashQueue: make(chan hashJob, 1024),
+		metrics: metrics{
+			SchemaVersion: "v1",
+			Kind:          "ebpffls_metrics",
+		},
 	}
 }
 
@@ -481,18 +489,20 @@ func (a *Agent) scanBlacklistOnce() {
 
 func (a *Agent) enforceBlacklist(tgid, pid, ppid, uid uint32, comm, path, hash, reason string) {
 	al := alert{
-		At:        time.Now(),
-		Policy:    a.policy.Name,
-		Action:    "kill",
-		DryRun:    a.options.DryRun,
-		TGID:      tgid,
-		PID:       pid,
-		PPID:      ppid,
-		UID:       uid,
-		Comm:      comm,
-		Score:     a.policy.Threshold,
-		Threshold: a.policy.Threshold,
-		Reasons:   []string{reason},
+		SchemaVersion: "v1",
+		Kind:          "ransomware_alert",
+		At:            time.Now(),
+		Policy:        a.policy.Name,
+		Action:        "kill",
+		DryRun:        a.options.DryRun,
+		TGID:          tgid,
+		PID:           pid,
+		PPID:          ppid,
+		UID:           uid,
+		Comm:          comm,
+		Score:         a.policy.Threshold,
+		Threshold:     a.policy.Threshold,
+		Reasons:       []string{reason},
 		Events: []scoredEvent{{
 			At:     time.Now(),
 			Type:   "blacklist",
@@ -735,6 +745,8 @@ func (a *Agent) ringbufDropDelta(current uint64) uint64 {
 }
 
 func (a *Agent) logMetrics() {
+	a.metrics.SchemaVersion = "v1"
+	a.metrics.Kind = "ebpffls_metrics"
 	data, _ := json.Marshal(a.metrics)
 	log.Printf("metrics=%s", data)
 }
@@ -903,20 +915,22 @@ func (a *Agent) block(state *procState) {
 
 func (a *Agent) alertAndEnforce(state *procState, reason string, action string) {
 	al := alert{
-		At:        time.Now(),
-		Policy:    a.policy.Name,
-		Action:    normalizeAction(action),
-		DryRun:    a.options.DryRun,
-		TGID:      state.TGID,
-		PID:       state.PID,
-		PPID:      state.PPID,
-		UID:       state.UID,
-		Comm:      state.Comm,
-		Score:     state.Score,
-		Threshold: a.policy.Threshold,
-		Reasons:   state.Reasons,
-		Features:  state.Features,
-		Events:    state.RecentEvents,
+		SchemaVersion: "v1",
+		Kind:          "ransomware_alert",
+		At:            time.Now(),
+		Policy:        a.policy.Name,
+		Action:        normalizeAction(action),
+		DryRun:        a.options.DryRun,
+		TGID:          state.TGID,
+		PID:           state.PID,
+		PPID:          state.PPID,
+		UID:           state.UID,
+		Comm:          state.Comm,
+		Score:         state.Score,
+		Threshold:     a.policy.Threshold,
+		Reasons:       state.Reasons,
+		Features:      state.Features,
+		Events:        state.RecentEvents,
 	}
 	data, _ := json.Marshal(al)
 	log.Printf("alert=%s", data)

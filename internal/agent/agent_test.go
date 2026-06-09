@@ -1,12 +1,67 @@
 package agent
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/panzhenyu/ebpffls/internal/config"
 	"github.com/panzhenyu/ebpffls/internal/sensor"
 )
+
+func TestAlertSchemaFields(t *testing.T) {
+	data, err := json.Marshal(alert{
+		SchemaVersion: "v1",
+		Kind:          "ransomware_alert",
+		Policy:        "test",
+		Action:        "kill",
+		Reasons:       []string{"behavior threshold"},
+		Features:      procFeatures{DistinctPaths: 3},
+	})
+	if err != nil {
+		t.Fatalf("marshal alert: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal alert: %v", err)
+	}
+	if got["schema_version"] != "v1" {
+		t.Fatalf("schema_version = %v, want v1", got["schema_version"])
+	}
+	if got["kind"] != "ransomware_alert" {
+		t.Fatalf("kind = %v, want ransomware_alert", got["kind"])
+	}
+	if _, ok := got["features"].(map[string]any); !ok {
+		t.Fatalf("features missing or wrong type: %#v", got["features"])
+	}
+}
+
+func TestMetricsSchemaFields(t *testing.T) {
+	data, err := json.Marshal(metrics{
+		SchemaVersion:     "v1",
+		Kind:              "ebpffls_metrics",
+		Alerts:            1,
+		Blocks:            2,
+		BlacklistMatches:  3,
+		RingbufDropsTotal: 4,
+	})
+	if err != nil {
+		t.Fatalf("marshal metrics: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal metrics: %v", err)
+	}
+	if got["schema_version"] != "v1" {
+		t.Fatalf("schema_version = %v, want v1", got["schema_version"])
+	}
+	if got["kind"] != "ebpffls_metrics" {
+		t.Fatalf("kind = %v, want ebpffls_metrics", got["kind"])
+	}
+	if got["alerts"] != float64(1) || got["blocks"] != float64(2) {
+		t.Fatalf("metrics counters missing: %#v", got)
+	}
+}
 
 func TestPruneIdleRemovesOldProcFDAndBlockedState(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)

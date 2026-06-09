@@ -118,3 +118,4 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 | 2026-06-09 | 完成 Phase 3.1：writable shared mmap 采样与阻断回归 |
 | 2026-06-09 | 完成 Phase 3.6：io_uring_enter 基础观测与集成回归 |
 | 2026-06-09 | 完成 Phase 3.3/3.4：多架构 kprobe 符号候选与 deny override 回归 |
+| 2026-06-09 | 完成 Phase 4.2/4.4：trusted rsync、make -j 误报回归与 alert/metrics schema v1 |
