@@ -159,6 +159,7 @@ rules:
 
 Supported features are `distinct_paths`, `open_write_pairs`, and
 `rename_suffix_count`. Supported operators are `>`, `>=`, `==`, `<=`, and `<`.
+Rule action `block` is accepted as a policy-friendly alias for `deny`.
 
 **Not yet implemented:** `exec_after_blocked` as a score-only rule.
 

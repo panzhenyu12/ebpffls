@@ -37,6 +37,29 @@ rules:
 	}
 }
 
+func TestLoadNormalizesRuleBlockActionToDeny(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.yaml")
+	if err := os.WriteFile(path, []byte(`
+name: block-rule-test
+rules:
+  - name: fanout
+    feature: distinct_paths
+    op: ">"
+    value: 5
+    action: block
+`), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	policy, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := policy.Rules[0].Action; got != "deny" {
+		t.Fatalf("rule action = %q, want deny", got)
+	}
+}
+
 func TestLoadRejectsInvalidRuleFeature(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "policy.yaml")
 	if err := os.WriteFile(path, []byte(`

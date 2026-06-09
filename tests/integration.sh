@@ -386,6 +386,67 @@ PY
   stop_agent
 }
 
+test_feature_rule_distinct_paths_blocks() {
+  log "rules DSL block action denies no-rename fanout by distinct_paths"
+  local dir="${TMP_DIR}/rule-block"
+  local bl="${TMP_DIR}/rule-block-blacklist.txt"
+  local policy="${TMP_DIR}/rule-block.yaml"
+  local agent_log="${TMP_DIR}/rule-block-agent.log"
+  local src="${TMP_DIR}/rule_block.c"
+  local sim="${TMP_DIR}/rule_block"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" rule-block-test 1000 kill "${dir}" "${bl}"
+  cat >>"${policy}" <<'YAML'
+rules:
+  - name: fanout-block
+    feature: distinct_paths
+    op: ">"
+    value: 4
+    action: block
+    reason: distinct path block rule
+YAML
+  start_agent "${policy}" "${agent_log}"
+  cat >"${src}" <<'C'
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+  if (argc != 2) {
+    _exit(2);
+  }
+  char path[512];
+  for (int i = 0; i < 5; i++) {
+    snprintf(path, sizeof(path), "%s/fanout-%d.txt", argv[1], i);
+    int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+    if (fd < 0) {
+      _exit(3);
+    }
+    write(fd, "data", 4);
+    close(fd);
+    usleep(20000);
+  }
+  sleep(1);
+  snprintf(path, sizeof(path), "%s/blocked-after-rule.txt", argv[1]);
+  int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+  if (fd < 0 && errno == EPERM) {
+    _exit(0);
+  }
+  if (fd >= 0) {
+    close(fd);
+  }
+  _exit(4);
+}
+C
+  cc "${src}" -o "${sim}"
+  expect_survives "distinct_paths block rule" "${sim}" "${dir}"
+  wait_for_log "${agent_log}" 'distinct path block rule' "distinct_paths block rule"
+  wait_for_log "${agent_log}" '"action":"deny"' "block action normalized to deny"
+  stop_agent
+}
+
 test_getdents64_scan_scores_and_kills() {
   log "getdents64 directory scan scores and kills"
   local dir="${TMP_DIR}/scan"
@@ -1164,6 +1225,7 @@ main() {
   test_dry_run_survives
   test_behavior_threshold_kills
   test_feature_rule_distinct_paths_kills
+  test_feature_rule_distinct_paths_blocks
   test_getdents64_scan_scores_and_kills
   test_writable_mmap_scores_and_kills
   test_io_uring_after_protected_activity_scores

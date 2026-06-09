@@ -73,7 +73,7 @@
 
 ### Phase 2 验收标准
 
-- [ ] 可用 yaml 定义一条「distinct_paths > N → block」规则
+- [x] 可用 yaml 定义一条「distinct_paths > N → block」规则（`block` 规范化为 `deny`）
 - [x] 告警输出 `distinct_paths`、`open_write_pairs`、`rename_suffix_count` 特征向量
 - [x] 可用 yaml 定义一条「distinct_paths >= N → block/kill」规则
 - [x] 不改名加密可通过扇出规则触发

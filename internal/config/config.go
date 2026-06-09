@@ -143,6 +143,9 @@ func Load(path string) (Policy, error) {
 		if r.Action == "" {
 			r.Action = p.Action
 		}
+		if r.Action == "block" {
+			r.Action = "deny"
+		}
 		if r.Reason == "" {
 			r.Reason = r.Name
 		}
@@ -168,7 +171,7 @@ func validateRule(rule Rule) error {
 		return fmt.Errorf("value must be >= 0")
 	}
 	switch rule.Action {
-	case "log", "deny", "kill":
+	case "log", "deny", "kill", "block":
 	default:
 		return fmt.Errorf("unsupported action %q", rule.Action)
 	}
