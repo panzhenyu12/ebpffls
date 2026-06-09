@@ -221,6 +221,7 @@ scores:
 YAML
   start_agent "${policy}" "${agent_log}" dry-run
   wait_for_log "${agent_log}" 'synced_bpf_policy ioc_extensions=1 ransom_notes=1 protected_dirs=1' "BPF IOC policy sync"
+  wait_for_log "${agent_log}" 'attached override kprobe op=openat symbol=' "architecture-aware kprobe attach"
 
   if bpf_lsm_active; then
     expect_survives "unprotected suspicious extension scoped out" python3 - <<PY

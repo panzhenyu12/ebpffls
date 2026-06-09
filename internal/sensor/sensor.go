@@ -7,6 +7,7 @@ import (
 	"hash/fnv"
 	"log"
 	"os"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -122,38 +123,39 @@ func New(policy config.Policy) (*Sensor, error) {
 	}
 
 	kprobes := []struct {
-		symbol   string
+		op       string
 		prog     *ebpf.Program
 		optional bool
 	}{
-		{"__x64_sys_openat", objs.KpOverrideOpenat, false},
-		{"__x64_sys_openat2", objs.KpOverrideOpenat2, false},
-		{"__x64_sys_rename", objs.KpOverrideRename, false},
-		{"__x64_sys_renameat", objs.KpOverrideRenameat, false},
-		{"__x64_sys_renameat2", objs.KpOverrideRenameat2, false},
-		{"__x64_sys_unlink", objs.KpOverrideUnlink, false},
-		{"__x64_sys_unlinkat", objs.KpOverrideUnlinkat, false},
-		{"__x64_sys_truncate", objs.KpOverrideTruncate, false},
-		{"__x64_sys_ftruncate", objs.KpOverrideFtruncate, false},
-		{"__x64_sys_execve", objs.KpOverrideExecve, false},
-		{"__x64_sys_write", objs.KpOverrideWrite, false},
-		{"__x64_sys_pwrite64", objs.KpOverridePwrite64, false},
-		{"__x64_sys_writev", objs.KpOverrideWritev, false},
-		{"__x64_sys_copy_file_range", objs.KpOverrideCopyFileRange, false},
-		{"__x64_sys_getdents64", objs.KpOverrideGetdents64, false},
-		{"__x64_sys_mmap", objs.KpOverrideMmap, false},
-		{"__x64_sys_io_uring_enter", objs.KpOverrideIoUringEnter, true},
+		{"openat", objs.KpOverrideOpenat, false},
+		{"openat2", objs.KpOverrideOpenat2, false},
+		{"rename", objs.KpOverrideRename, false},
+		{"renameat", objs.KpOverrideRenameat, false},
+		{"renameat2", objs.KpOverrideRenameat2, false},
+		{"unlink", objs.KpOverrideUnlink, false},
+		{"unlinkat", objs.KpOverrideUnlinkat, false},
+		{"truncate", objs.KpOverrideTruncate, false},
+		{"ftruncate", objs.KpOverrideFtruncate, false},
+		{"execve", objs.KpOverrideExecve, false},
+		{"write", objs.KpOverrideWrite, false},
+		{"pwrite64", objs.KpOverridePwrite64, false},
+		{"writev", objs.KpOverrideWritev, false},
+		{"copy_file_range", objs.KpOverrideCopyFileRange, false},
+		{"getdents64", objs.KpOverrideGetdents64, false},
+		{"mmap", objs.KpOverrideMmap, false},
+		{"io_uring_enter", objs.KpOverrideIoUringEnter, true},
 	}
 	for _, kp := range kprobes {
-		l, err := link.Kprobe(kp.symbol, kp.prog, nil)
+		l, symbol, err := attachKprobe(kp.op, kp.prog)
 		if err != nil {
 			if kp.optional {
-				log.Printf("optional override kprobe %s unavailable: %v", kp.symbol, err)
+				log.Printf("optional override kprobe op=%s unavailable: %v", kp.op, err)
 				continue
 			}
 			s.Close()
-			return nil, fmt.Errorf("attach override kprobe %s: %w", kp.symbol, err)
+			return nil, fmt.Errorf("attach override kprobe %s: %w", kp.op, err)
 		}
+		log.Printf("attached override kprobe op=%s symbol=%s", kp.op, symbol)
 		s.links = append(s.links, l)
 	}
 
@@ -164,6 +166,29 @@ func New(policy config.Policy) (*Sensor, error) {
 	}
 	s.reader = rd
 	return s, nil
+}
+
+func attachKprobe(op string, prog *ebpf.Program) (link.Link, string, error) {
+	var errs []string
+	for _, symbol := range kprobeSymbols(op, runtime.GOARCH) {
+		l, err := link.Kprobe(symbol, prog, nil)
+		if err == nil {
+			return l, symbol, nil
+		}
+		errs = append(errs, fmt.Sprintf("%s: %v", symbol, err))
+	}
+	return nil, "", errors.New(strings.Join(errs, "; "))
+}
+
+func kprobeSymbols(op, arch string) []string {
+	switch arch {
+	case "amd64":
+		return []string{"__x64_sys_" + op, "__se_sys_" + op}
+	case "arm64":
+		return []string{"__arm64_sys_" + op, "__se_sys_" + op}
+	default:
+		return []string{"__" + arch + "_sys_" + op, "__se_sys_" + op}
+	}
 }
 
 func (s *Sensor) BlockTGID(tgid uint32, action uint32, ttl time.Duration) error {

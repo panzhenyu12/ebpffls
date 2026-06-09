@@ -3,6 +3,7 @@ package sensor
 import (
 	"errors"
 	"os"
+	"reflect"
 	"syscall"
 	"testing"
 
@@ -40,6 +41,43 @@ func TestRingbufDropsReadsCounterMap(t *testing.T) {
 	}
 	if drops != 42 {
 		t.Fatalf("drops = %d, want 42", drops)
+	}
+}
+
+func TestKprobeSymbolsAreArchitectureAware(t *testing.T) {
+	tests := []struct {
+		name string
+		op   string
+		arch string
+		want []string
+	}{
+		{
+			name: "amd64",
+			op:   "openat",
+			arch: "amd64",
+			want: []string{"__x64_sys_openat", "__se_sys_openat"},
+		},
+		{
+			name: "arm64",
+			op:   "openat",
+			arch: "arm64",
+			want: []string{"__arm64_sys_openat", "__se_sys_openat"},
+		},
+		{
+			name: "fallback",
+			op:   "write",
+			arch: "riscv64",
+			want: []string{"__riscv64_sys_write", "__se_sys_write"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := kprobeSymbols(tt.op, tt.arch)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("symbols = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
 }
 
