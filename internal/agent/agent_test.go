@@ -107,8 +107,22 @@ func TestRingbufDropDeltaReportsOnlyIncrements(t *testing.T) {
 	if delta := a.ringbufDropDelta(10); delta != 3 {
 		t.Fatalf("second delta = %d, want 3", delta)
 	}
+	if a.metrics.RingbufDropsTotal != 10 {
+		t.Fatalf("RingbufDropsTotal = %d, want 10", a.metrics.RingbufDropsTotal)
+	}
 	if delta := a.ringbufDropDelta(2); delta != 2 {
 		t.Fatalf("reset delta = %d, want 2", delta)
+	}
+}
+
+func TestMetricsIntervalBounds(t *testing.T) {
+	a := &Agent{policy: config.Policy{Window: time.Second}}
+	if got := a.metricsInterval(); got != 10*time.Second {
+		t.Fatalf("metricsInterval small = %s, want 10s", got)
+	}
+	a.policy.Window = 2 * time.Minute
+	if got := a.metricsInterval(); got != time.Minute {
+		t.Fatalf("metricsInterval large = %s, want 1m", got)
 	}
 }
 

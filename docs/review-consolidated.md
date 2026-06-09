@@ -111,3 +111,4 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 | 2026-06-09 | 完成 Phase 2.1：alert JSON 输出 procFeatures 特征向量 |
 | 2026-06-09 | 完成 Phase 2.2：yaml rules[] 支持特征阈值规则并覆盖不改名扇出阻断 |
 | 2026-06-09 | 完成 Phase 2.3：加密状态机输出 STAGE/FINALIZE |
+| 2026-06-09 | 完成 Phase 2.6：结构化 metrics 日志导出 alert/block/blacklist/drop 计数 |

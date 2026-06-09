@@ -34,6 +34,7 @@ type Agent struct {
 	hashes    *hashCache
 	hashQueue chan hashJob
 	lastDrops uint64
+	metrics   metrics
 }
 
 type hashJob struct {
@@ -81,6 +82,13 @@ type procFeatures struct {
 	OpenWritePairs    int    `json:"open_write_pairs"`
 	RenameSuffixCount int    `json:"rename_suffix_count"`
 	EncryptionState   string `json:"encryption_state,omitempty"`
+}
+
+type metrics struct {
+	Alerts            uint64 `json:"alerts"`
+	Blocks            uint64 `json:"blocks"`
+	BlacklistMatches  uint64 `json:"blacklist_matches"`
+	RingbufDropsTotal uint64 `json:"ringbuf_drops_total"`
 }
 
 type scoredEvent struct {
@@ -131,8 +139,10 @@ func (a *Agent) Run(ctx context.Context) error {
 	events, errs := a.sensor.Events(ctx)
 	pruneTicker := time.NewTicker(a.pruneInterval())
 	dropTicker := time.NewTicker(a.ringbufDropInterval())
+	metricsTicker := time.NewTicker(a.metricsInterval())
 	defer pruneTicker.Stop()
 	defer dropTicker.Stop()
+	defer metricsTicker.Stop()
 	if a.blacklist != nil {
 		go a.hashWorker(ctx)
 		go a.scanBlacklist(ctx)
@@ -154,6 +164,8 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.pruneIdle(time.Now())
 		case <-dropTicker.C:
 			a.logRingbufDrops()
+		case <-metricsTicker.C:
+			a.logMetrics()
 		}
 	}
 }
@@ -492,6 +504,8 @@ func (a *Agent) enforceBlacklist(tgid, pid, ppid, uid uint32, comm, path, hash, 
 	}
 	data, _ := json.Marshal(al)
 	log.Printf("alert=%s", data)
+	a.metrics.Alerts++
+	a.metrics.BlacklistMatches++
 	if a.options.DryRun {
 		return
 	}
@@ -638,6 +652,20 @@ func (a *Agent) ringbufDropInterval() time.Duration {
 	return interval
 }
 
+func (a *Agent) metricsInterval() time.Duration {
+	interval := a.policy.Window
+	if interval <= 0 {
+		return 30 * time.Second
+	}
+	if interval < 10*time.Second {
+		return 10 * time.Second
+	}
+	if interval > time.Minute {
+		return time.Minute
+	}
+	return interval
+}
+
 func (a *Agent) pruneIdle(now time.Time) {
 	ttl := a.idleTTL()
 	for tgid, state := range a.procs {
@@ -691,10 +719,16 @@ func (a *Agent) logRingbufDrops() {
 func (a *Agent) ringbufDropDelta(current uint64) uint64 {
 	previous := a.lastDrops
 	a.lastDrops = current
+	a.metrics.RingbufDropsTotal = current
 	if current < previous {
 		return current
 	}
 	return current - previous
+}
+
+func (a *Agent) logMetrics() {
+	data, _ := json.Marshal(a.metrics)
+	log.Printf("metrics=%s", data)
 }
 
 func (a *Agent) matchRule(state *procState) (bool, string, string) {
@@ -850,10 +884,12 @@ func (a *Agent) alertAndEnforce(state *procState, reason string, action string) 
 	}
 	data, _ := json.Marshal(al)
 	log.Printf("alert=%s", data)
+	a.metrics.Alerts++
 
 	if a.options.DryRun || action == "log" {
 		return
 	}
+	a.metrics.Blocks++
 	a.enforceTGID(state.TGID, blockAction(action), reason)
 }
 

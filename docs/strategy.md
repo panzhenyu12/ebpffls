@@ -115,6 +115,12 @@ blocked-lineage memory are pruned after an idle TTL derived from `window` and
 `block_ttl`. Ring buffer reserve failures are counted in BPF and logged by the
 agent as increasing `ringbuf_drops` totals.
 
+The agent also emits periodic structured metrics logs:
+
+```text
+metrics={"alerts":1,"blocks":1,"blacklist_matches":0,"ringbuf_drops_total":0}
+```
+
 Alerts include a `features` object with `distinct_paths`, `open_write_pairs`,
 `rename_suffix_count`, and `encryption_state`. `encryption_state` moves to
 `STAGE` on fanout/staged writes and `FINALIZE` on suspicious suffix or ransom

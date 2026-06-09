@@ -144,8 +144,16 @@ wait_for_log() {
   local logfile="$1"
   local pattern="$2"
   local name="$3"
+  wait_for_log_for "${logfile}" "${pattern}" "${name}" 30
+}
 
-  for _ in $(seq 1 30); do
+wait_for_log_for() {
+  local logfile="$1"
+  local pattern="$2"
+  local name="$3"
+  local tries="$4"
+
+  for _ in $(seq 1 "${tries}"); do
     if grep -q "${pattern}" "${logfile}"; then
       return
     fi
@@ -325,6 +333,7 @@ PY
   expect_killed "behavior threshold" python3 "${sim}"
   wait_for_log "${agent_log}" 'behavior threshold' "behavior threshold"
   wait_for_log "${agent_log}" '"features":{' "behavior features"
+  wait_for_log_for "${agent_log}" 'metrics={"alerts":' "metrics log" 120
   stop_agent
 }
 

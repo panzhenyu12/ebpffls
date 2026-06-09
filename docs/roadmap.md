@@ -69,7 +69,7 @@
 | 2.3 | 加密状态机：`SCAN`→`STAGE`→`FINALIZE`（先实现 STAGE/FINALIZE） | 已完成：STAGE/FINALIZE 输出到特征向量 |
 | 2.4 | trust 模型升级：comm + exe 路径 + uid；备份破坏不减分 | 已完成 |
 | 2.5 | ftruncate fd→path 解析 | 已完成：复用 open/openat/openat2 fd→path 缓存 |
-| 2.6 | 结构化 metrics：alert/block/blacklist 计数导出 | 可运营 |
+| 2.6 | 结构化 metrics：alert/block/blacklist 计数导出 | 已完成：周期性 `metrics={...}` 结构化日志 |
 
 ### Phase 2 验收标准
 
