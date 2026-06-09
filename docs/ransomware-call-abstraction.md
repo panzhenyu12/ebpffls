@@ -125,17 +125,17 @@ truncate(path, 0) 或 ftruncate(fd, 0)
 | LSM `path_rename` / `inode_rename` | rename | `-EPERM` / SIGKILL（需 active BPF LSM） |
 | LSM `path_unlink` | unlink | `-EPERM` / SIGKILL（需 active BPF LSM） |
 | LSM `bprm_check_security` | execve | `-EPERM` / SIGKILL（需 active BPF LSM） |
-| kprobe `__x64_sys_*` | openat/rename/unlink/truncate/ftruncate/execve/write/pwrite64/writev/copy_file_range | SIGKILL |
+| kprobe syscall candidates | openat/openat2/rename/unlink/truncate/ftruncate/execve/write/pwrite64/writev/copy_file_range/getdents64/mmap/io_uring_enter | `SIGKILL` or `bpf_override_return(-EPERM)`；amd64/arm64 符号候选并 fallback `__se_sys_*` |
 
-### 4.4 未覆盖调用面（缺口）
+### 4.4 扩展调用面状态
 
-| 调用面 | 语义操作 | 优先级 |
-|--------|----------|--------|
-| `getdents64` / `stat` | `SO_SCAN` | P2 |
-| `mmap` + 写 | `SO_ENCRYPT_WRITE` | P1 |
-| `io_uring` 异步 I/O | 多种 | P2；当前已有 `io_uring_enter` 基础观测，不解析 SQE |
-| `link` / `symlink` | 逃避/替换 | P2 |
-| socket 系列 | 外传/C2 | P3（新子系统） |
+| 调用面 | 语义操作 | 当前状态 |
+|--------|----------|----------|
+| `getdents64` | `SO_SCAN` | 已覆盖：目录 fd→path 评分与 kprobe 执法 |
+| `mmap` + 写 | `SO_ENCRYPT_WRITE` | 已覆盖：writable shared mmap fd→path 评分 |
+| `io_uring` 异步 I/O | 多种 | 已覆盖基础观测：`io_uring_enter` 在保护域活动后计分；不解析 SQE |
+| `connect` IPv4/IPv6 | 双重勒索外联 | 已覆盖：文件活动后非 allowlist 外联评分 |
+| `link` / `symlink` | 逃避/替换 | 当前路线图未纳入；可作为后续语义扩展 |
 
 ---
 
@@ -150,14 +150,14 @@ truncate(path, 0) 或 ftruncate(fd, 0)
 | **Rate** | events/s；write bytes/s | open_write > 30/10s |
 | **Lineage** | ppid；blocked 祖先；exe hash | parent_blocked → block child |
 
-当前实现已有 Scope（路径前缀）+ 部分 Pattern（扩展名/赎金信）+ 弱 Rate（open/write 计数），并对 blocked lineage 的 exec 做 kill 传播和 `exec_after_blocked` 评分；更完整的跨会话/跨 cgroup Lineage 仍待演进。
+当前实现已有 Scope（路径前缀 + cgroup scope）+ Pattern（扩展名/赎金信/rename_suffix_count）+ Rate/Fanout（distinct_paths、open_write_pairs、高频写入）+ Lineage（blocked 父 TGID exec 传播与 `exec_after_blocked` 评分）。更完整的跨会话 lineage 可作为后续路线图扩展。
 
 ---
 
 ## 6. 目标策略形态（演进方向）
 
 ```yaml
-# 未来形态示意，当前 yaml 尚未支持
+# 未来语义 DSL 示意；当前已支持 rules[] 特征阈值规则
 semantic_rules:
   - name: instant-suffix-rename
     when: [SO_RENAME_SUFFIX, scope.protected]
@@ -180,6 +180,6 @@ semantic_rules:
 |------|------|
 | 勒索调用能否抽象？ | **能**，分为语义操作 → 调用面 → 归一化事件 |
 | 当前版覆盖多少？ | 核心文件变异调用约 **86–93%**；write/pwrite64/writev/copy_file_range/mmap/getdents64 已覆盖普通 fd 路径评分，close/dup 和相对 dirfd 生命周期已跟踪；io_uring 已有基础观测但不解析 SQE |
-| 下一步抽象重点？ | 扩展 `SO_ENCRYPT_WRITE` 调用面；统一 IOC 策略源；引入特征向量 |
+| 下一步抽象重点？ | 当前路线图项已落地；后续可按新路线图扩展 SQE 解析、跨会话 lineage 或内容熵特征 |
 
 相关文档：[strategy.md](./strategy.md)、[roadmap.md](./roadmap.md)
