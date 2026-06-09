@@ -347,6 +347,12 @@ int kp_override_writev(struct pt_regs *ctx)
 	return kill_blocked_syscall();
 }
 
+SEC("kprobe/__x64_sys_copy_file_range")
+int kp_override_copy_file_range(struct pt_regs *ctx)
+{
+	return kill_blocked_syscall();
+}
+
 SEC("lsm/file_open")
 int BPF_PROG(enforce_file_open, struct file *file)
 {
@@ -600,6 +606,19 @@ int trace_writev(struct trace_event_raw_sys_enter *ctx)
 
 	e->arg0 = (int)ctx->args[0];
 	e->size = (__u64)ctx->args[2];
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_copy_file_range")
+int trace_copy_file_range(struct trace_event_raw_sys_enter *ctx)
+{
+	struct event *e = new_event(EVENT_WRITE);
+	if (!e)
+		return 0;
+
+	e->arg0 = (int)ctx->args[2];
+	e->size = (__u64)ctx->args[4];
 	bpf_ringbuf_submit(e, 0);
 	return 0;
 }

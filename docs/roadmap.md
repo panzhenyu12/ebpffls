@@ -48,6 +48,7 @@
 - [x] 单 fd 重复 `write` 可通过 fd→path 评分触发阻断
 - [x] 单 fd 重复 `pwrite64`/`writev` 可通过 fd→path 评分触发阻断
 - [x] fd→path 缓存跟踪 close 与 dup/fcntl 复制，避免 fd 复用误杀并覆盖 dup 后写入
+- [x] copy_file_range 写入保护域目标 fd 可通过 fd→path 评分触发阻断
 - [x] 父进程 blocked 后 exec 子进程，子进程被 kill 传播阻断
 - [x] 集成测试覆盖 dry-run、行为阈值、即时 IOC、unlink/truncate、hash 黑名单、热更新扫描、blocked lineage exec
 
@@ -81,7 +82,7 @@
 | ID | 任务 | 产出 |
 |----|------|------|
 | 3.1 | `mmap` LSM `file_mmap` 或等效 trace | `SO_ENCRYPT_WRITE` 补洞 |
-| 3.2 | `copy_file_range` tracepoint | 模式 C |
+| 3.2 | `copy_file_range` tracepoint | 已完成：目标 fd→path 评分与 kprobe kill |
 | 3.3 | kprobe 符号多架构（arm64 `__arm64_sys_*`）或 fentry 迁移 | 可移植 |
 | 3.4 | `bpf_override_return(-EPERM)` deny 路径与 kill 路径分离 | 真同步 deny |
 | 3.5 | `getdents64` 采样（可选阈值） | `SO_SCAN` 早期预警 |

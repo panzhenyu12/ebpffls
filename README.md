@@ -87,6 +87,7 @@ Within a sliding window, the agent scores:
 
 - write-open on protected paths
 - write/pwrite64/writev syscalls on protected or backup file descriptors observed through open/openat/openat2
+- copy_file_range to protected or backup file descriptors
 - truncate, ftruncate, rename, and unlink activity
 - suspicious extensions and ransom note filenames
 - backup/snapshot path destruction

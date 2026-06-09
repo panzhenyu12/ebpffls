@@ -32,11 +32,12 @@ syscalls map to semantic ransomware operations.
 | `execve` | Spawn | tracepoint | blacklist only | kprobe; optional LSM after mark |
 | `openat` / `openat2` | Stage open | tracepoint exit | protected write-open; fd→path cache | kprobe; optional LSM |
 | `write` / `pwrite64` / `writev` | Encrypt in-place | tracepoint | protected/backup fd path when fd was observed | kprobe after mark; optional LSM |
+| `copy_file_range` | Copy into new file | tracepoint | protected/backup destination fd path when fd was observed | kprobe after mark |
 | `rename` / `renameat(2)` | Suffix replace | tracepoint | protected rename; protected suspicious suffix is immediate IOC | kprobe; optional LSM IOC |
 | `unlinkat` | Delete | tracepoint | protected/backup | kprobe; optional LSM |
 | `truncate` / `ftruncate` | Truncate | tracepoint | protected/backup; ftruncate uses fd→path cache | kprobe; optional LSM |
 
-Gaps: `mmap`, `copy_file_range`, `io_uring`, directory scan syscalls — see
+Gaps: `mmap`, `io_uring`, directory scan syscalls — see
 [roadmap.md](./roadmap.md).
 
 ## Response levels
@@ -87,6 +88,7 @@ Within a sliding window (`window`, default 10s), per-TGID score includes:
 
 - write-open on protected or backup paths
 - write/pwrite64/writev syscalls on protected or backup file descriptors observed through open/openat/openat2
+- copy_file_range to protected or backup file descriptors
 - truncate/ftruncate, rename, unlink on protected or backup paths
 - suspicious extensions and ransom note filenames on create
 - backup destruction bonus

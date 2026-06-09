@@ -51,6 +51,7 @@ func New() (*Sensor, error) {
 		{"syscalls", "sys_enter_write", objs.TraceWrite},
 		{"syscalls", "sys_enter_pwrite64", objs.TracePwrite64},
 		{"syscalls", "sys_enter_writev", objs.TraceWritev},
+		{"syscalls", "sys_enter_copy_file_range", objs.TraceCopyFileRange},
 		{"syscalls", "sys_enter_close", objs.TraceClose},
 		{"syscalls", "sys_enter_dup", objs.TraceDup},
 		{"syscalls", "sys_exit_dup", objs.TraceDupExit},
@@ -114,6 +115,7 @@ func New() (*Sensor, error) {
 		{"__x64_sys_write", objs.KpOverrideWrite},
 		{"__x64_sys_pwrite64", objs.KpOverridePwrite64},
 		{"__x64_sys_writev", objs.KpOverrideWritev},
+		{"__x64_sys_copy_file_range", objs.KpOverrideCopyFileRange},
 	}
 	for _, kp := range kprobes {
 		l, err := link.Kprobe(kp.symbol, kp.prog, nil)

@@ -360,6 +360,70 @@ PY
   stop_agent
 }
 
+test_copy_file_range_scoring_kills() {
+  log "copy_file_range to protected fd scores and kills"
+  local dir="${TMP_DIR}/copy-range"
+  local source_dir="${TMP_DIR}/copy-range-source"
+  local bl="${TMP_DIR}/copy-range-blacklist.txt"
+  local policy="${TMP_DIR}/copy-range.yaml"
+  local agent_log="${TMP_DIR}/copy-range-agent.log"
+  local src="${TMP_DIR}/copy_range.c"
+  local sim="${TMP_DIR}/copy_range"
+  mkdir -p "${dir}" "${source_dir}"
+  : >"${bl}"
+  write_policy "${policy}" copy-range-test 5 kill "${dir}" "${bl}"
+  cat >"${src}" <<'C'
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+  if (argc != 3) {
+    return 2;
+  }
+  char in_path[512];
+  char out_path[512];
+  snprintf(in_path, sizeof(in_path), "%s/source.bin", argv[1]);
+  snprintf(out_path, sizeof(out_path), "%s/target.bin", argv[2]);
+
+  int in = open(in_path, O_CREAT | O_RDWR | O_TRUNC, 0600);
+  if (in < 0) {
+    return 3;
+  }
+  char buf[4096];
+  memset(buf, 'a', sizeof(buf));
+  for (int i = 0; i < 128; i++) {
+    if (write(in, buf, sizeof(buf)) != sizeof(buf)) {
+      return 4;
+    }
+  }
+  lseek(in, 0, SEEK_SET);
+
+  int out = open(out_path, O_CREAT | O_RDWR | O_TRUNC, 0600);
+  if (out < 0) {
+    return 5;
+  }
+  for (int i = 0; i < 100; i++) {
+    off_t off_in = 0;
+    long n = syscall(SYS_copy_file_range, in, &off_in, out, 0, 4096, 0);
+    if (n < 0) {
+      return 6;
+    }
+    usleep(20000);
+  }
+  return 0;
+}
+C
+  cc "${src}" -o "${sim}"
+  start_agent "${policy}" "${agent_log}"
+  expect_killed "copy_file_range scoring" "${sim}" "${source_dir}" "${dir}"
+  wait_for_log "${agent_log}" 'write syscall on protected fd' "copy_file_range"
+  stop_agent
+}
+
 test_trusted_comm_spoof_not_bypassed() {
   log "strict trust rejects comm spoof without trusted exe path"
   local dir="${TMP_DIR}/trust-spoof"
@@ -571,6 +635,7 @@ main() {
   test_behavior_threshold_kills
   test_fd_write_path_scoring_kills
   test_fd_lifecycle_tracking
+  test_copy_file_range_scoring_kills
   test_trusted_comm_spoof_not_bypassed
   test_immediate_rename_ioc_kills
   test_ransom_note_kills
