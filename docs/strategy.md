@@ -116,8 +116,9 @@ blocked-lineage memory are pruned after an idle TTL derived from `window` and
 agent as increasing `ringbuf_drops` totals.
 
 Alerts include a `features` object with `distinct_paths`, `open_write_pairs`,
-and `rename_suffix_count`. These L2 features are produced inside the current
-sliding window and are ready for the upcoming rules DSL.
+`rename_suffix_count`, and `encryption_state`. `encryption_state` moves to
+`STAGE` on fanout/staged writes and `FINALIZE` on suspicious suffix or ransom
+note finalization.
 
 YAML can define feature-threshold rules:
 

@@ -66,7 +66,7 @@
 |----|------|------|
 | 2.1 | `procFeatures`：`distinct_paths`、`open_write_pairs`、`rename_suffix_count` | 已完成：alert JSON 输出 L2 特征向量 |
 | 2.2 | yaml 支持 `rules[]`（when 组合 + action） | 已完成：基于特征阈值的 rules[] DSL |
-| 2.3 | 加密状态机：`SCAN`→`STAGE`→`FINALIZE`（先实现 STAGE/FINALIZE） | 模式识别 |
+| 2.3 | 加密状态机：`SCAN`→`STAGE`→`FINALIZE`（先实现 STAGE/FINALIZE） | 已完成：STAGE/FINALIZE 输出到特征向量 |
 | 2.4 | trust 模型升级：comm + exe 路径 + uid；备份破坏不减分 | 已完成 |
 | 2.5 | ftruncate fd→path 解析 | 已完成：复用 open/openat/openat2 fd→path 缓存 |
 | 2.6 | 结构化 metrics：alert/block/blacklist 计数导出 | 可运营 |

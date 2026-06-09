@@ -77,9 +77,10 @@ type procState struct {
 }
 
 type procFeatures struct {
-	DistinctPaths     int `json:"distinct_paths"`
-	OpenWritePairs    int `json:"open_write_pairs"`
-	RenameSuffixCount int `json:"rename_suffix_count"`
+	DistinctPaths     int    `json:"distinct_paths"`
+	OpenWritePairs    int    `json:"open_write_pairs"`
+	RenameSuffixCount int    `json:"rename_suffix_count"`
+	EncryptionState   string `json:"encryption_state,omitempty"`
 }
 
 type scoredEvent struct {
@@ -188,6 +189,8 @@ func (a *Agent) handle(ev sensor.Event) {
 
 	if reason := a.immediateIOC(ev); reason != "" {
 		state := a.state(ev)
+		a.prune(state, ev.Timestamp)
+		a.recordFeatures(state, ev)
 		state.Blocked = true
 		state.Reasons = appendReason(state.Reasons, reason)
 		state.RecentEvents = append(state.RecentEvents, scoredEvent{
@@ -556,6 +559,7 @@ func (a *Agent) recordFeatures(state *procState, ev sensor.Event) {
 	}
 	state.Features.DistinctPaths = len(state.seenPaths)
 	state.Features.OpenWritePairs = len(state.openWritePaths)
+	a.updateEncryptionState(state, ev)
 }
 
 func (a *Agent) featurePaths(ev sensor.Event) []string {
@@ -578,6 +582,23 @@ func (a *Agent) featurePaths(ev sensor.Event) []string {
 		return []string{path}
 	}
 	return nil
+}
+
+func (a *Agent) updateEncryptionState(state *procState, ev sensor.Event) {
+	if state.Features.EncryptionState == "FINALIZE" {
+		return
+	}
+	if ev.Type == sensor.EventRename && a.hasSuspiciousExtension(ev.Path2) {
+		state.Features.EncryptionState = "FINALIZE"
+		return
+	}
+	if ev.Type == sensor.EventOpen && (a.isRansomNote(ev.Path) || a.hasSuspiciousExtension(ev.Path)) {
+		state.Features.EncryptionState = "FINALIZE"
+		return
+	}
+	if state.Features.OpenWritePairs >= 3 || state.Features.DistinctPaths >= 3 {
+		state.Features.EncryptionState = "STAGE"
+	}
 }
 
 func (a *Agent) pruneInterval() time.Duration {

@@ -152,6 +152,7 @@ func TestPruneResetsFeatures(t *testing.T) {
 			DistinctPaths:     3,
 			OpenWritePairs:    2,
 			RenameSuffixCount: 1,
+			EncryptionState:   "STAGE",
 		},
 		seenPaths: map[string]struct{}{
 			"/protected/a": {},
@@ -171,6 +172,31 @@ func TestPruneResetsFeatures(t *testing.T) {
 	}
 	if len(state.openWritePaths) != 0 {
 		t.Fatalf("openWritePaths len = %d, want 0", len(state.openWritePaths))
+	}
+}
+
+func TestEncryptionStateMachineStageAndFinalize(t *testing.T) {
+	a := &Agent{
+		policy: config.Policy{
+			SuspiciousExtensions: []string{".locked"},
+		},
+	}
+	state := &procState{}
+
+	for _, path := range []string{"/protected/a", "/protected/b", "/protected/c"} {
+		a.recordFeatures(state, sensor.Event{Type: sensor.EventOpen, Arg0: 1, Path: path})
+	}
+	if state.Features.EncryptionState != "STAGE" {
+		t.Fatalf("EncryptionState = %q, want STAGE", state.Features.EncryptionState)
+	}
+
+	a.recordFeatures(state, sensor.Event{
+		Type:  sensor.EventRename,
+		Path:  "/protected/c",
+		Path2: "/protected/c.locked",
+	})
+	if state.Features.EncryptionState != "FINALIZE" {
+		t.Fatalf("EncryptionState = %q, want FINALIZE", state.Features.EncryptionState)
 	}
 }
 

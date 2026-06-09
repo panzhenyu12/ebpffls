@@ -640,6 +640,7 @@ print("survived")
 PY
   expect_killed "rename IOC" python3 "${sim}"
   wait_for_log "${agent_log}" 'protected rename to suspicious extension' "rename IOC"
+  wait_for_log "${agent_log}" '"encryption_state":"FINALIZE"' "rename IOC state"
   stop_agent
 }
 
