@@ -139,7 +139,8 @@ trusted_uids:
 
 If `trusted_exe_paths` or `trusted_uids` are configured, the comm allowlist must
 also match those identity fields. This prevents a process from bypassing scoring
-by only spoofing its comm name.
+by only spoofing its comm name. Trusted exemptions do not bypass backup/snapshot
+destruction scoring under `backup_dirs`.
 
 ## Documentation
 

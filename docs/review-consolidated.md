@@ -57,7 +57,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 | 保护域批量 open 改写 | 中 | 轨2→4 |
 | 零日原地 write 加密 | 中高 | 轨2 fd→path 评分覆盖 write/pwrite64/writev/copy_file_range；已标记后 kprobe 可补杀 |
 | fork 子进程逃逸 | 低 | exec_after_blocked 未实现 |
-| comm 伪装 trusted | 中 | 可配置 comm + exe 路径 + uid；默认策略已启用严格身份 |
+| comm 伪装 trusted | 中 | 可配置 comm + exe 路径 + uid；默认策略已启用严格身份；backup_dirs 高危操作不被 trust 豁免 |
 | mmap / io_uring | 无 | 未观测 |
 
 ---
@@ -70,7 +70,6 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 4. kprobe 符号仅 x86_64
 5. `exec_after_blocked` 作为评分规则未实现；kill 传播已实现
 6. Agent 无自保护
-7. 备份破坏信任模型仍可细化，例如对 backup_dirs 的高危操作不应因普通 trust 直接豁免
 
 ---
 

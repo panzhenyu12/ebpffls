@@ -66,6 +66,7 @@ backup_dirs:
   - ${protected_dir}/backup
 trusted_processes:
   - ebpffls
+  - trustedbackup
 blacklist_scan: ${scan}
 blacklist_hashes: []
 blacklist_hash_files:
@@ -470,6 +471,51 @@ YAML
   stop_agent
 }
 
+test_trusted_backup_destroy_still_kills() {
+  log "trusted process cannot bypass backup destruction scoring"
+  local dir="${TMP_DIR}/trusted-backup"
+  local bl="${TMP_DIR}/trusted-backup-blacklist.txt"
+  local policy="${TMP_DIR}/trusted-backup.yaml"
+  local agent_log="${TMP_DIR}/trusted-backup-agent.log"
+  local src="${TMP_DIR}/trusted_backup.c"
+  local sim="${TMP_DIR}/trusted_backup"
+  mkdir -p "${dir}/backup"
+  : >"${bl}"
+  write_policy "${policy}" trusted-backup-test 10 kill "${dir}" "${bl}"
+  cat >"${src}" <<'C'
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/prctl.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+  if (argc != 2) {
+    return 2;
+  }
+  prctl(PR_SET_NAME, "trustedbackup", 0, 0, 0);
+  for (int i = 0; i < 100; i++) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/backup/trusted-%d.txt", argv[1], i);
+    int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+    if (fd < 0) {
+      return 3;
+    }
+    write(fd, "data", 4);
+    close(fd);
+    usleep(20000);
+  }
+  return 0;
+}
+C
+  cc "${src}" -o "${sim}"
+  start_agent "${policy}" "${agent_log}"
+  expect_killed "trusted backup destruction" "${sim}" "${dir}"
+  wait_for_log "${agent_log}" 'backup' "trusted backup"
+  stop_agent
+}
+
 test_immediate_rename_ioc_kills() {
   log "protected suspicious rename kills immediately"
   local dir="${TMP_DIR}/rename-ioc"
@@ -663,6 +709,7 @@ main() {
   test_relative_dirfd_path_scoring_kills
   test_copy_file_range_scoring_kills
   test_trusted_comm_spoof_not_bypassed
+  test_trusted_backup_destroy_still_kills
   test_immediate_rename_ioc_kills
   test_ransom_note_kills
   test_unlink_and_truncate_kill

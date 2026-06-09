@@ -80,7 +80,8 @@ Trusted process exemptions start with `trusted_processes` (`comm`). When
 `trusted_exe_paths` or `trusted_uids` are configured, the agent also checks
 `/proc/<tgid>/exe` and the event UID before skipping scoring or blacklist scans.
 This blocks simple comm spoofing where malware renames itself to a trusted
-process name.
+process name. Backup/snapshot destruction under `backup_dirs` is never skipped
+solely because the process is trusted.
 
 ## Policy model (behavior track)
 

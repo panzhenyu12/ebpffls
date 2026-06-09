@@ -134,10 +134,6 @@ func (a *Agent) Run(ctx context.Context) error {
 }
 
 func (a *Agent) handle(ev sensor.Event) {
-	if a.isTrustedEvent(ev) {
-		return
-	}
-
 	if a.options.DebugEvents {
 		log.Printf("event type=%s pid=%d tgid=%d ppid=%d uid=%d comm=%q arg0=%d size=%d path=%q path2=%q",
 			ev.TypeName(), ev.PID, ev.TGID, ev.PPID, ev.UID, ev.Comm, ev.Arg0, ev.Size, ev.Path, ev.Path2)
@@ -149,6 +145,10 @@ func (a *Agent) handle(ev sensor.Event) {
 	}
 
 	if a.updateFD(&ev) {
+		return
+	}
+
+	if a.isTrustedEvent(ev) && !a.backupSensitiveEvent(ev) {
 		return
 	}
 
@@ -545,6 +545,25 @@ func (a *Agent) score(ev sensor.Event) (int, string) {
 		}
 	}
 	return 0, ""
+}
+
+func (a *Agent) backupSensitiveEvent(ev sensor.Event) bool {
+	path := pickPath(ev)
+	switch ev.Type {
+	case sensor.EventOpen:
+		return isWriteOpen(ev.Arg0) && a.inBackupScope(path)
+	case sensor.EventWrite, sensor.EventTruncate:
+		if path == "" {
+			path = a.fdPath(ev.TGID, ev.Arg0)
+		}
+		return a.inBackupScope(path)
+	case sensor.EventRename:
+		return a.inBackupScope(ev.Path) || a.inBackupScope(ev.Path2)
+	case sensor.EventUnlink:
+		return a.inBackupScope(path)
+	default:
+		return false
+	}
 }
 
 func (a *Agent) block(state *procState) {
