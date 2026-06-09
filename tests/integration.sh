@@ -266,6 +266,7 @@ YAML
   start_agent "${policy}" "${agent_log}" dry-run
   wait_for_log "${agent_log}" 'synced_bpf_policy ioc_extensions=1 ransom_notes=1 protected_dirs=1' "BPF IOC policy sync"
   wait_for_log "${agent_log}" 'attached override kprobe op=openat symbol=' "architecture-aware kprobe attach"
+  wait_for_log "${agent_log}" 'bpf_lsm attached=' "optional BPF LSM summary"
 
   if bpf_lsm_active; then
     expect_survives "unprotected suspicious extension scoped out" python3 - <<PY
@@ -283,6 +284,7 @@ PY
       fail "protected suspicious extension: expected BPF LSM denial"
     fi
   else
+    wait_for_log "${agent_log}" 'bpf_lsm attached=0 skipped=' "BPF LSM optional fallback"
     log "BPF LSM not active; hard-deny scope check skipped"
   fi
   stop_agent

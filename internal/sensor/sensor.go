@@ -43,6 +43,13 @@ type Sensor struct {
 	reader  *ringbuf.Reader
 }
 
+type lsmAttachFunc func(*ebpf.Program) (link.Link, error)
+
+type lsmAttachSummary struct {
+	Attached int
+	Skipped  int
+}
+
 func New(policy config.Policy) (*Sensor, error) {
 	var objs ransomwareObjects
 	if err := loadRansomwareObjects(&objs, nil); err != nil {
@@ -115,14 +122,16 @@ func New(policy config.Policy) (*Sensor, error) {
 		objs.EnforcePathUnlink,
 		objs.EnforceBprmCheckSecurity,
 	}
-	for _, prog := range lsms {
-		l, err := link.AttachLSM(link.LSMOptions{Program: prog})
-		if err != nil {
-			s.Close()
-			return nil, fmt.Errorf("attach BPF LSM %s: %w", prog.String(), err)
-		}
-		s.links = append(s.links, l)
+	lsmSummary := lsmAttachResult{lsmAttachSummary: lsmAttachSummary{Skipped: len(lsms)}}
+	if bpfLSMActive() {
+		lsmSummary = attachLSMPrograms(lsms, func(prog *ebpf.Program) (link.Link, error) {
+			return link.AttachLSM(link.LSMOptions{Program: prog})
+		})
+	} else {
+		log.Printf("optional BPF LSM inactive in /sys/kernel/security/lsm; skipping LSM attach")
 	}
+	s.links = append(s.links, lsmSummary.links...)
+	log.Printf("bpf_lsm attached=%d skipped=%d mode=optional", lsmSummary.Attached, lsmSummary.Skipped)
 
 	kprobes := []struct {
 		op       string
@@ -168,6 +177,52 @@ func New(policy config.Policy) (*Sensor, error) {
 	}
 	s.reader = rd
 	return s, nil
+}
+
+type lsmAttachResult struct {
+	lsmAttachSummary
+	links []link.Link
+}
+
+func attachLSMPrograms(programs []*ebpf.Program, attach lsmAttachFunc) lsmAttachResult {
+	var result lsmAttachResult
+	for _, prog := range programs {
+		l, err := attach(prog)
+		if err != nil {
+			log.Printf("optional BPF LSM %s unavailable: %v", lsmProgramName(prog), err)
+			result.Skipped++
+			continue
+		}
+		if l != nil {
+			result.links = append(result.links, l)
+		}
+		result.Attached++
+	}
+	return result
+}
+
+func lsmProgramName(prog *ebpf.Program) string {
+	if prog == nil {
+		return "<nil>"
+	}
+	return prog.String()
+}
+
+func bpfLSMActive() bool {
+	data, err := os.ReadFile("/sys/kernel/security/lsm")
+	if err != nil {
+		return false
+	}
+	return bpfLSMActiveFromData(string(data))
+}
+
+func bpfLSMActiveFromData(data string) bool {
+	for _, lsm := range strings.Split(strings.TrimSpace(data), ",") {
+		if lsm == "bpf" {
+			return true
+		}
+	}
+	return false
 }
 
 func attachKprobe(op string, prog *ebpf.Program) (link.Link, string, error) {

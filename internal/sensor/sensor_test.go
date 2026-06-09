@@ -3,12 +3,14 @@ package sensor
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"syscall"
 	"testing"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 )
 
 func TestRingbufDropsReadsCounterMap(t *testing.T) {
@@ -79,6 +81,50 @@ func TestKprobeSymbolsAreArchitectureAware(t *testing.T) {
 				t.Fatalf("symbols = %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestAttachLSMProgramsTreatsFailuresAsOptional(t *testing.T) {
+	result := attachLSMPrograms([]*ebpf.Program{nil, nil}, func(*ebpf.Program) (link.Link, error) {
+		return nil, fmt.Errorf("lsm unavailable")
+	})
+	if result.Attached != 0 {
+		t.Fatalf("attached = %d, want 0", result.Attached)
+	}
+	if result.Skipped != 2 {
+		t.Fatalf("skipped = %d, want 2", result.Skipped)
+	}
+	if len(result.links) != 0 {
+		t.Fatalf("links len = %d, want 0", len(result.links))
+	}
+}
+
+func TestAttachLSMProgramsCountsPartialSuccess(t *testing.T) {
+	calls := 0
+	result := attachLSMPrograms([]*ebpf.Program{nil, nil, nil}, func(*ebpf.Program) (link.Link, error) {
+		calls++
+		if calls == 2 {
+			return nil, fmt.Errorf("lsm unavailable")
+		}
+		return nil, nil
+	})
+	if result.Attached != 2 {
+		t.Fatalf("attached = %d, want 2", result.Attached)
+	}
+	if result.Skipped != 1 {
+		t.Fatalf("skipped = %d, want 1", result.Skipped)
+	}
+	if len(result.links) != 0 {
+		t.Fatalf("links len = %d, want 0 for nil fake links", len(result.links))
+	}
+}
+
+func TestBPFLSMActiveFromData(t *testing.T) {
+	if !bpfLSMActiveFromData("lockdown,capability,bpf,apparmor\n") {
+		t.Fatal("expected active bpf LSM")
+	}
+	if bpfLSMActiveFromData("lockdown,capability,apparmor\n") {
+		t.Fatal("unexpected active bpf LSM")
 	}
 }
 

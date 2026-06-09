@@ -60,7 +60,7 @@ func monitor(args []string) error {
 
 	s, err := sensor.New(policy)
 	if err != nil {
-		return fmt.Errorf("%w; run as root and ensure BPF LSM is active in /sys/kernel/security/lsm", err)
+		return fmt.Errorf("%w; run as root and ensure BTF, tracepoints, kprobes, and required BPF permissions are available", err)
 	}
 	defer s.Close()
 
