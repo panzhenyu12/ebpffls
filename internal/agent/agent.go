@@ -148,7 +148,7 @@ func (a *Agent) handle(ev sensor.Event) {
 		return
 	}
 
-	if a.updateFD(ev) {
+	if a.updateFD(&ev) {
 		return
 	}
 
@@ -211,15 +211,17 @@ func (a *Agent) handle(ev sensor.Event) {
 	}
 }
 
-func (a *Agent) updateFD(ev sensor.Event) bool {
+func (a *Agent) updateFD(ev *sensor.Event) bool {
 	switch ev.Type {
 	case sensor.EventOpen:
 		if ev.Path == "" || ev.Arg1 < 0 {
 			return false
 		}
+		path := a.resolveOpenPath(*ev)
 		a.fdMu.Lock()
-		a.fdPaths[fdKey{TGID: ev.TGID, FD: ev.Arg1}] = ev.Path
+		a.fdPaths[fdKey{TGID: ev.TGID, FD: ev.Arg1}] = path
 		a.fdMu.Unlock()
+		ev.Path = path
 		return false
 	case sensor.EventClose:
 		a.fdMu.Lock()
@@ -240,6 +242,22 @@ func (a *Agent) updateFD(ev sensor.Event) bool {
 		return true
 	}
 	return false
+}
+
+func (a *Agent) resolveOpenPath(ev sensor.Event) string {
+	path := ev.Path
+	if filepath.IsAbs(path) {
+		return path
+	}
+	dirfd := int32(ev.Size)
+	if dirfd == -100 {
+		return path
+	}
+	base := a.fdPath(ev.TGID, dirfd)
+	if base == "" {
+		return path
+	}
+	return filepath.Join(base, path)
 }
 
 func (a *Agent) fdPath(tgid uint32, fd int32) string {

@@ -30,6 +30,7 @@ struct {
 } blocked_tgids SEC(".maps");
 
 struct pending_open {
+	__s32 dirfd;
 	__s32 flags;
 	char path[PATH_MAX_LEN];
 };
@@ -507,6 +508,7 @@ int trace_openat(struct trace_event_raw_sys_enter *ctx)
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 
 	const char *filename = (const char *)ctx->args[1];
+	pending.dirfd = (int)ctx->args[0];
 	pending.flags = (int)ctx->args[2];
 	bpf_probe_read_user_str(pending.path, sizeof(pending.path), filename);
 	bpf_map_update_elem(&pending_opens, &pid_tgid, &pending, BPF_ANY);
@@ -527,6 +529,7 @@ int trace_openat_exit(struct trace_event_raw_sys_exit *ctx)
 		if (e) {
 			e->arg0 = pending->flags;
 			e->arg1 = fd;
+			e->size = (__u64)(__u32)pending->dirfd;
 			__builtin_memcpy(e->path, pending->path, sizeof(e->path));
 			bpf_ringbuf_submit(e, 0);
 		}
@@ -543,6 +546,7 @@ int trace_openat2(struct trace_event_raw_sys_enter *ctx)
 	struct open_how *how = (struct open_how *)ctx->args[2];
 
 	const char *filename = (const char *)ctx->args[1];
+	pending.dirfd = (int)ctx->args[0];
 	bpf_probe_read_user_str(pending.path, sizeof(pending.path), filename);
 	bpf_probe_read_user(&pending.flags, sizeof(pending.flags), &how->flags);
 	bpf_map_update_elem(&pending_opens, &pid_tgid, &pending, BPF_ANY);
@@ -563,6 +567,7 @@ int trace_openat2_exit(struct trace_event_raw_sys_exit *ctx)
 		if (e) {
 			e->arg0 = pending->flags;
 			e->arg1 = fd;
+			e->size = (__u64)(__u32)pending->dirfd;
 			__builtin_memcpy(e->path, pending->path, sizeof(e->path));
 			bpf_ringbuf_submit(e, 0);
 		}

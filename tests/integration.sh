@@ -360,6 +360,31 @@ PY
   stop_agent
 }
 
+test_relative_dirfd_path_scoring_kills() {
+  log "relative openat under protected dirfd scores and kills"
+  local dir="${TMP_DIR}/relative-dirfd"
+  local bl="${TMP_DIR}/relative-dirfd-blacklist.txt"
+  local policy="${TMP_DIR}/relative-dirfd.yaml"
+  local agent_log="${TMP_DIR}/relative-dirfd-agent.log"
+  local sim="${TMP_DIR}/relative-dirfd.py"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" relative-dirfd-test 5 kill "${dir}" "${bl}"
+  start_agent "${policy}" "${agent_log}"
+  cat >"${sim}" <<PY
+import os, time
+dirfd = os.open("${dir}", os.O_RDONLY | os.O_DIRECTORY)
+fd = os.open("relative-target.txt", os.O_CREAT | os.O_RDWR, 0o600, dir_fd=dirfd)
+for i in range(100):
+    os.write(fd, b"x" * 4096)
+    time.sleep(0.02)
+print("survived")
+PY
+  expect_killed "relative dirfd scoring" python3 "${sim}"
+  wait_for_log "${agent_log}" 'write syscall on protected fd' "relative dirfd"
+  stop_agent
+}
+
 test_copy_file_range_scoring_kills() {
   log "copy_file_range to protected fd scores and kills"
   local dir="${TMP_DIR}/copy-range"
@@ -635,6 +660,7 @@ main() {
   test_behavior_threshold_kills
   test_fd_write_path_scoring_kills
   test_fd_lifecycle_tracking
+  test_relative_dirfd_path_scoring_kills
   test_copy_file_range_scoring_kills
   test_trusted_comm_spoof_not_bypassed
   test_immediate_rename_ioc_kills

@@ -30,7 +30,7 @@ syscalls map to semantic ransomware operations.
 | Syscall | Semantic op | Observation | Scoring | Enforcement |
 |---------|-------------|-------------|---------|-------------|
 | `execve` | Spawn | tracepoint | blacklist only | kprobe; optional LSM after mark |
-| `openat` / `openat2` | Stage open | tracepoint exit | protected write-open; fd→path cache | kprobe; optional LSM |
+| `openat` / `openat2` | Stage open | tracepoint exit | protected write-open; fd→path cache; relative dirfd resolution | kprobe; optional LSM |
 | `write` / `pwrite64` / `writev` | Encrypt in-place | tracepoint | protected/backup fd path when fd was observed | kprobe after mark; optional LSM |
 | `copy_file_range` | Copy into new file | tracepoint | protected/backup destination fd path when fd was observed | kprobe after mark |
 | `rename` / `renameat(2)` | Suffix replace | tracepoint | protected rename; protected suspicious suffix is immediate IOC | kprobe; optional LSM IOC |
@@ -100,8 +100,8 @@ writes the TGID into `blocked_tgids`.
 **Partially implemented:** blocked lineage exec is re-blocked as a kill action.
 
 **Partially implemented:** fd path-aware scoring for write/pwrite64/writev/ftruncate uses an agent
-fd→path cache. The cache tracks close and dup/fcntl duplication, but relative
-dirfd path resolution is still limited.
+fd→path cache. The cache tracks close, dup/fcntl duplication, and relative
+openat/openat2 dirfd resolution.
 
 **Not yet implemented:** `exec_after_blocked` as a score-only rule, yaml-driven BPF IOC maps.
 

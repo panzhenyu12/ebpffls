@@ -44,7 +44,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 归一化事件 (struct event → agent.Event)
 ```
 
-**覆盖评估：** 核心文件变异调用约 80–88%；`write`/`pwrite64`/`writev`/`copy_file_range` 已做 fd→path 评分，mmap/io_uring 仍是弱点。
+**覆盖评估：** 核心文件变异调用约 82–90%；`write`/`pwrite64`/`writev`/`copy_file_range` 已做 fd→path 评分，mmap/io_uring 仍是弱点。
 
 ---
 
@@ -65,7 +65,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 ## 5. 已知代码缺口
 
 1. BPF IOC 硬编码，与 yaml 不同步；硬规则无 `protected_dirs` 作用域；且依赖 active BPF LSM
-2. `EventWrite` 已基于 agent fd→path 缓存计分，且跟踪 close/dup/fcntl 复制；相对 dirfd、mmap/io_uring 路径评分仍待补齐
+2. `EventWrite` 已基于 agent fd→path 缓存计分，且跟踪 close/dup/fcntl 复制与相对 dirfd；mmap/io_uring 路径评分仍待补齐
 3. kprobe 仅 `bpf_send_signal`，不 `bpf_override_return`
 4. kprobe 符号仅 x86_64
 5. `exec_after_blocked` 作为评分规则未实现；kill 传播已实现

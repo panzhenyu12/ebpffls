@@ -88,7 +88,7 @@ truncate(path, 0) 或 ftruncate(fd, 0)
 | 内核入口 | Event 类型 | 携带字段 | Agent 用途 |
 |----------|------------|----------|------------|
 | `sys_enter_execve` | `EVENT_EXEC` | path=filename | 黑名单哈希 |
-| `sys_exit_openat` / `sys_exit_openat2` | `EVENT_OPEN` | path, arg0=flags, arg1=fd | 写意图、赎金信、扩展名；建立 fd→path 缓存 |
+| `sys_exit_openat` / `sys_exit_openat2` | `EVENT_OPEN` | path, arg0=flags, arg1=fd, size=dirfd | 写意图、赎金信、扩展名；建立 fd→path 缓存并解析相对 dirfd |
 | `sys_enter_write` / `sys_enter_pwrite64` / `sys_enter_writev` | `EVENT_WRITE` | arg0=fd, size | 使用 agent fd→path 缓存做保护域/备份域评分 |
 | `sys_enter_copy_file_range` | `EVENT_WRITE` | arg0=fd_out, size | 使用目标 fd→path 缓存覆盖写新删旧模式 |
 | `sys_enter_close` | `EVENT_CLOSE` | arg0=fd | 删除 fd→path 缓存，避免 fd 复用误杀 |
@@ -179,7 +179,7 @@ semantic_rules:
 | 问题 | 答案 |
 |------|------|
 | 勒索调用能否抽象？ | **能**，分为语义操作 → 调用面 → 归一化事件 |
-| 当前版覆盖多少？ | 核心文件变异调用约 **80–88%**；write/pwrite64/writev/copy_file_range 已覆盖普通 fd 路径评分，close/dup 生命周期已跟踪，但相对 dirfd、mmap/io_uring 仍是弱点 |
+| 当前版覆盖多少？ | 核心文件变异调用约 **82–90%**；write/pwrite64/writev/copy_file_range 已覆盖普通 fd 路径评分，close/dup 和相对 dirfd 生命周期已跟踪，但 mmap/io_uring 仍是弱点 |
 | 下一步抽象重点？ | 扩展 `SO_ENCRYPT_WRITE` 调用面；统一 IOC 策略源；引入特征向量 |
 
 相关文档：[strategy.md](./strategy.md)、[roadmap.md](./roadmap.md)
