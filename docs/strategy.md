@@ -164,7 +164,7 @@ Syscalls / VFS
      │                               blocked_tgids map
      │
      ├─► optional LSM (IOC hard deny + marked TGID deny/kill)
-     └─► kprobes (marked TGID SIGKILL on sensitive syscalls, x86_64)
+     └─► kprobes (marked TGID SIGKILL or override-return deny)
 ```
 
 ## Next steps

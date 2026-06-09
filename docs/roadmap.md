@@ -102,7 +102,7 @@
 | ID | 任务 |
 |----|------|
 | 4.1 | Agent 自保护：systemd 看门狗、只读部署、保护自身路径 |
-| 4.2 | 集成测试套件：勒索模拟脚本 + 误报场景（make -j、rsync backup） |
+| 4.2 | 集成测试套件：勒索模拟脚本 + 误报场景（make -j、rsync backup） | 已开始：新增 trusted rsync 与 make -j 误报回归 |
 | 4.3 | 多策略 / cgroup 绑定 |
 | 4.4 | SIEM 出口（alert JSON schema 稳定化） |
 | 4.5 | 网络 egress 子模块（双重勒索），可选 |

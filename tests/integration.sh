@@ -508,27 +508,45 @@ test_deny_override_rejects_marked_syscall() {
   local bl="${TMP_DIR}/deny-override-blacklist.txt"
   local policy="${TMP_DIR}/deny-override.yaml"
   local agent_log="${TMP_DIR}/deny-override-agent.log"
-  local sim="${TMP_DIR}/deny_override.py"
+  local src="${TMP_DIR}/deny_override.c"
+  local sim="${TMP_DIR}/deny_override"
   mkdir -p "${dir}"
   : >"${bl}"
   write_policy "${policy}" deny-override-test 1 deny "${dir}" "${bl}"
   start_agent "${policy}" "${agent_log}"
-  cat >"${sim}" <<PY
-import errno, time
+  cat >"${src}" <<'C'
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
 
-with open("${dir}/mark.txt", "w") as f:
-    f.write("mark")
-time.sleep(1.0)
-try:
-    with open("${dir}/blocked.txt", "w") as f:
-        f.write("blocked")
-except OSError as e:
-    if e.errno == errno.EPERM:
-        raise SystemExit(0)
-    raise
-raise SystemExit(2)
-PY
-  expect_survives "deny override" python3 "${sim}"
+int main(int argc, char **argv) {
+  if (argc != 2) {
+    _exit(2);
+  }
+  char path[512];
+  snprintf(path, sizeof(path), "%s/mark.txt", argv[1]);
+  int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+  if (fd < 0) {
+    _exit(3);
+  }
+  write(fd, "mark", 4);
+  close(fd);
+  sleep(1);
+  snprintf(path, sizeof(path), "%s/blocked.txt", argv[1]);
+  fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+  if (fd < 0 && errno == EPERM) {
+    _exit(0);
+  }
+  if (fd >= 0) {
+    close(fd);
+  }
+  _exit(4);
+}
+C
+  cc "${src}" -o "${sim}"
+  expect_survives "deny override" "${sim}" "${dir}"
   wait_for_log "${agent_log}" 'enforced action=deny' "deny enforcement"
   stop_agent
 }
@@ -965,6 +983,102 @@ PY
   stop_agent
 }
 
+test_rsync_trusted_false_positive_survives() {
+  log "trusted rsync bulk copy does not alert or kill"
+  command -v rsync >/dev/null || {
+    log "rsync missing; trusted rsync false-positive check skipped"
+    return
+  }
+  local dir="${TMP_DIR}/rsync-fp"
+  local src="${TMP_DIR}/rsync-src"
+  local bl="${TMP_DIR}/rsync-fp-blacklist.txt"
+  local policy="${TMP_DIR}/rsync-fp.yaml"
+  local agent_log="${TMP_DIR}/rsync-fp-agent.log"
+  mkdir -p "${dir}" "${src}"
+  : >"${bl}"
+  for i in $(seq 1 20); do
+    printf 'safe-%s\n' "${i}" >"${src}/file-${i}.txt"
+  done
+  cat >"${policy}" <<YAML
+name: rsync-false-positive-test
+window: 10s
+threshold: 3
+action: kill
+block_ttl: 1m
+protected_dirs:
+  - ${dir}
+backup_dirs: []
+trusted_processes:
+  - ebpffls
+  - rsync
+trusted_exe_paths:
+  - /usr/bin/rsync
+trusted_uids:
+  - 0
+blacklist_scan: 30s
+blacklist_hashes: []
+blacklist_hash_files:
+  - ${bl}
+suspicious_extensions:
+  - .locked
+ransom_note_names:
+  - README_FOR_DECRYPT.txt
+scores:
+  write: 1
+  truncate: 6
+  rename: 8
+  unlink: 8
+  suspicious_extension: 10
+  ransom_note: 20
+  backup_destroy: 20
+  high_rate_bonus: 15
+  exec_after_blocked: 10
+  scan: 1
+  mmap: 3
+  io_uring: 1
+YAML
+  start_agent "${policy}" "${agent_log}"
+  expect_survives "trusted rsync" rsync -a "${src}/" "${dir}/"
+  sleep 0.5
+  if grep -q 'alert=' "${agent_log}"; then
+    cat "${agent_log}" >&2 || true
+    fail "trusted rsync emitted alert"
+  fi
+  stop_agent
+}
+
+test_make_workload_false_positive_survives() {
+  log "make workload in protected dir stays below behavior threshold"
+  command -v make >/dev/null || {
+    log "make missing; make workload false-positive check skipped"
+    return
+  }
+  local dir="${TMP_DIR}/make-fp"
+  local bl="${TMP_DIR}/make-fp-blacklist.txt"
+  local policy="${TMP_DIR}/make-fp.yaml"
+  local agent_log="${TMP_DIR}/make-fp-agent.log"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  cat >"${dir}/Makefile" <<'MK'
+all: out/a.txt out/b.txt out/c.txt
+
+out:
+	mkdir -p out
+
+out/%.txt: | out
+	printf 'build %s\n' "$@" >"$@"
+MK
+  write_policy "${policy}" make-false-positive-test 20 kill "${dir}" "${bl}"
+  start_agent "${policy}" "${agent_log}"
+  expect_survives "make workload" make -C "${dir}" -j2
+  sleep 0.5
+  if grep -q 'alert=' "${agent_log}"; then
+    cat "${agent_log}" >&2 || true
+    fail "make workload emitted alert"
+  fi
+  stop_agent
+}
+
 main() {
   command -v cc >/dev/null || fail "cc is required for integration tests"
   [[ -x "${BIN}" ]] || fail "missing binary ${BIN}; run make build first"
@@ -990,6 +1104,8 @@ main() {
   test_hash_blacklist_exec_kills
   test_hash_blacklist_hot_scan_kills
   test_blocked_lineage_exec_kills_child
+  test_rsync_trusted_false_positive_survives
+  test_make_workload_false_positive_survives
   log "all integration tests passed"
 }
 

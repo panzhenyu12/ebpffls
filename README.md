@@ -15,7 +15,7 @@ Four complementary defense tracks:
 | **IOC fast path** | YAML-synced BPF maps let active BPF LSM deny suspicious extensions and ransom-note filenames under protected directories |
 | **Behavior scoring** | Go agent scores bulk mutation on configured protected directories |
 | **Hash blacklist** | Userspace SHA-256 match against known ransomware samples |
-| **Enforcement** | Marked TGIDs are killed via x86_64 syscall kprobes; BPF LSM adds deny semantics when active |
+| **Enforcement** | Marked TGIDs are killed via syscall kprobes; `deny` can use `bpf_override_return(-EPERM)` when supported; BPF LSM adds IOC hard-deny when active |
 
 Components:
 
@@ -32,15 +32,16 @@ Requirements on the target Linux host:
 - Go 1.22+
 - clang/llvm
 - kernel BTF at `/sys/kernel/btf/vmlinux`
-- BPF LSM compiled for optional `deny` / IOC hard-deny mode. Check active LSMs with:
+- BPF LSM compiled for optional IOC hard-deny mode. Check active LSMs with:
 
 ```bash
 cat /sys/kernel/security/lsm
 ```
 
 If `bpf` is not listed, tracepoints, userspace scoring, hash blacklist, and
-kprobe-based `kill` enforcement can still work; LSM `deny` and IOC hard-deny
-will not be active.
+kprobe-based enforcement can still work. `deny` uses `bpf_override_return`
+when the kernel enables `CONFIG_BPF_KPROBE_OVERRIDE` and allows syscall error
+injection; LSM IOC hard-deny still requires active BPF LSM.
 
 ```bash
 make build
@@ -94,7 +95,10 @@ Within a sliding window, the agent scores:
 
 - write-open on protected paths
 - write/pwrite64/writev syscalls on protected or backup file descriptors observed through open/openat/openat2
+- writable shared mmap on protected or backup file descriptors
+- io_uring_enter activity after prior protected file activity
 - copy_file_range to protected or backup file descriptors
+- getdents64 directory scans on protected or backup file descriptors
 - truncate, ftruncate, rename, and unlink activity
 - suspicious extensions and ransom note filenames
 - backup/snapshot path destruction
@@ -108,7 +112,7 @@ Enforcement then applies via kprobes, and via LSM as well when `bpf` is active.
 | Action | Effect |
 |--------|--------|
 | `log` | JSON alert only |
-| `deny` | LSM returns `-EPERM` for marked TGID when BPF LSM is active |
+| `deny` | kprobe `bpf_override_return(-EPERM)` rejects marked syscalls when supported; BPF LSM also returns `-EPERM` when active |
 | `kill` | kprobes send `SIGKILL` on sensitive syscalls; userspace also signals the process |
 
 ## Hash blacklist
@@ -160,10 +164,11 @@ destruction scoring under `backup_dirs`.
 
 ## Limitations (current)
 
-- x86_64 kprobe symbols only
-- fd-based `write`/`pwrite64`/`writev`/`ftruncate` scoring depends on fd→path state from observed open/openat/openat2; close/dup and relative dirfd opens are tracked
-- BPF IOC rules hardcoded; not fully synced with YAML; require active BPF LSM
-- `deny` requires active BPF LSM (`bpf` in `/sys/kernel/security/lsm`)
-- No mmap / io_uring / network egress coverage
+- kprobe attach supports architecture-specific syscall symbols for amd64 and arm64 with `__se_sys_*` fallback, but still depends on kernel symbols being available
+- fd-based `write`/`pwrite64`/`writev`/`ftruncate`/`mmap`/`getdents64` scoring depends on fd→path state from observed open/openat/openat2; close/dup and relative dirfd opens are tracked
+- BPF IOC maps sync from YAML, but path-scoped IOC hard-deny requires active BPF LSM
+- `deny` requires syscall error-injection support for kprobe override, or active BPF LSM for LSM hooks
+- io_uring support observes `io_uring_enter` only; it does not parse SQE contents
+- No network egress coverage
 
 See [docs/roadmap.md](docs/roadmap.md) for planned improvements.
