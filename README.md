@@ -53,6 +53,10 @@ Run Linux/root integration tests:
 sudo make integration-test
 ```
 
+The integration suite includes `tests/ransomware_sim.py`, a small reusable
+ransomware-like workload simulator used to exercise fanout writes, suspicious
+suffix renames, and ransom-note creation paths.
+
 ## Run
 
 Observation only (default — dry-run prevents kernel enforcement):

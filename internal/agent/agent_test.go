@@ -106,6 +106,10 @@ func TestPruneIdleRemovesOldProcFDAndBlockedState(t *testing.T) {
 			{TGID: 100, FD: 3}: {Path: "/protected/old", LastSeen: old},
 			{TGID: 101, FD: 4}: {Path: "/protected/fresh", LastSeen: fresh},
 		},
+		procInfos: map[uint32]cachedProcInfo{
+			100: {Info: procInfo{TGID: 100, Exe: "/usr/bin/tar"}, LastSeen: old},
+			101: {Info: procInfo{TGID: 101, Exe: "/usr/bin/tar"}, LastSeen: fresh},
+		},
 		blocked: map[uint32]time.Time{
 			100: old,
 			101: fresh,
@@ -125,6 +129,12 @@ func TestPruneIdleRemovesOldProcFDAndBlockedState(t *testing.T) {
 	}
 	if _, ok := a.fdPaths[fdKey{TGID: 101, FD: 4}]; !ok {
 		t.Fatal("fresh fd state was pruned")
+	}
+	if _, ok := a.procInfos[100]; ok {
+		t.Fatal("stale proc info was not pruned")
+	}
+	if _, ok := a.procInfos[101]; !ok {
+		t.Fatal("fresh proc info was pruned")
 	}
 	if _, ok := a.blocked[100]; ok {
 		t.Fatal("stale blocked lineage state was not pruned")
@@ -496,6 +506,53 @@ func TestSelfProtectSensitiveEventBypassesTrustedExemption(t *testing.T) {
 		Path: "/opt/ebpffls/bin/ebpffls",
 	}) {
 		t.Fatal("expected self-protect unlink to be sensitive")
+	}
+}
+
+func TestTrustedEventUsesCachedProcInfo(t *testing.T) {
+	a := &Agent{
+		policy: config.Policy{
+			TrustedProcesses: []string{"tar"},
+			TrustedExePaths:  []string{"/usr/bin/tar"},
+			TrustedUIDs:      []uint32{0},
+		},
+		procInfos: map[uint32]cachedProcInfo{
+			42: {
+				Info:     procInfo{TGID: 42, Exe: "/usr/bin/tar"},
+				LastSeen: time.Now().Add(-time.Second),
+			},
+		},
+	}
+
+	if !a.isTrustedEvent(sensor.Event{Type: sensor.EventOpen, TGID: 42, UID: 0, Comm: "tar", Timestamp: time.Now()}) {
+		t.Fatal("expected trusted event to use cached proc exe")
+	}
+}
+
+func TestExecEventCachesTargetPathAsProcInfo(t *testing.T) {
+	now := time.Now()
+	a := &Agent{
+		procInfos: map[uint32]cachedProcInfo{},
+	}
+	a.cacheExecInfo(sensor.Event{
+		Type:      sensor.EventExec,
+		PID:       42,
+		TGID:      42,
+		UID:       0,
+		Comm:      "tar",
+		Path:      "/usr/bin/tar",
+		Timestamp: now,
+	})
+
+	cached, ok := a.procInfos[42]
+	if !ok {
+		t.Fatal("expected cached proc info")
+	}
+	if cached.Info.Exe != "/usr/bin/tar" {
+		t.Fatalf("cached exe = %q, want /usr/bin/tar", cached.Info.Exe)
+	}
+	if !cached.LastSeen.Equal(now) {
+		t.Fatalf("cached LastSeen = %s, want %s", cached.LastSeen, now)
 	}
 }
 

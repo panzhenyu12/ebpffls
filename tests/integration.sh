@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${ROOT_DIR}/bin/ebpffls"
+RANSOMWARE_SIM="${ROOT_DIR}/tests/ransomware_sim.py"
 TMP_DIR="$(mktemp -d /tmp/ebpffls-it.XXXXXX)"
 AGENT_PID=""
 BADLOOP=""
@@ -386,6 +387,21 @@ PY
   wait_for_log "${agent_log}" '"kind":"ransomware_alert"' "alert kind"
   wait_for_log "${agent_log}" '"features":{' "behavior features"
   wait_for_log_for "${agent_log}" '"kind":"ebpffls_metrics"' "metrics log" 120
+  stop_agent
+}
+
+test_ransomware_simulator_suffix_rename_kills() {
+  log "reusable ransomware simulator suffix rename kills"
+  local dir="${TMP_DIR}/ransomware-sim"
+  local bl="${TMP_DIR}/ransomware-sim-blacklist.txt"
+  local policy="${TMP_DIR}/ransomware-sim.yaml"
+  local agent_log="${TMP_DIR}/ransomware-sim-agent.log"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" ransomware-simulator-test 100 kill "${dir}" "${bl}"
+  start_agent "${policy}" "${agent_log}"
+  expect_killed "ransomware simulator suffix rename" python3 "${RANSOMWARE_SIM}" --mode rename-suffix --dir "${dir}" --count 100 --delay 0.02
+  wait_for_log "${agent_log}" 'rename to suspicious extension' "ransomware simulator suffix rename"
   stop_agent
 }
 
@@ -1484,6 +1500,77 @@ MK
   stop_agent
 }
 
+test_trusted_tar_extract_false_positive_survives() {
+  log "trusted tar extract into protected dir does not alert or kill"
+  command -v tar >/dev/null || {
+    log "tar missing; trusted tar false-positive check skipped"
+    return
+  }
+  local dir="${TMP_DIR}/tar-fp"
+  local src="${TMP_DIR}/tar-src"
+  local bl="${TMP_DIR}/tar-fp-blacklist.txt"
+  local policy="${TMP_DIR}/tar-fp.yaml"
+  local agent_log="${TMP_DIR}/tar-fp-agent.log"
+  local archive="${TMP_DIR}/tar-src.tar"
+  local tar_path
+  tar_path="$(command -v tar)"
+  mkdir -p "${dir}" "${src}/nested"
+  : >"${bl}"
+  for i in $(seq 1 30); do
+    printf 'archive-safe-%s\n' "${i}" >"${src}/nested/file-${i}.txt"
+  done
+  tar -cf "${archive}" -C "${src}" .
+  cat >"${policy}" <<YAML
+name: tar-false-positive-test
+window: 10s
+threshold: 3
+action: kill
+block_ttl: 1m
+protected_dirs:
+  - ${dir}
+backup_dirs: []
+self_protect_paths:
+  - ${dir}/self/ebpffls
+trusted_processes:
+  - ebpffls
+  - tar
+trusted_exe_paths:
+  - ${tar_path}
+trusted_uids:
+  - 0
+blacklist_scan: 30s
+blacklist_hashes: []
+blacklist_hash_files:
+  - ${bl}
+suspicious_extensions:
+  - .locked
+ransom_note_names:
+  - README_FOR_DECRYPT.txt
+scores:
+  write: 1
+  truncate: 6
+  rename: 8
+  unlink: 8
+  self_protect: 50
+  suspicious_extension: 10
+  ransom_note: 20
+  backup_destroy: 20
+  high_rate_bonus: 15
+  exec_after_blocked: 10
+  scan: 1
+  mmap: 3
+  io_uring: 1
+YAML
+  start_agent "${policy}" "${agent_log}"
+  expect_survives "trusted tar extract" tar -xf "${archive}" -C "${dir}"
+  sleep 0.5
+  if grep -q 'alert=' "${agent_log}"; then
+    cat "${agent_log}" >&2 || true
+    fail "trusted tar extract emitted alert"
+  fi
+  stop_agent
+}
+
 test_self_protect_path_kills_even_when_trusted() {
   log "self-protect path tamper kills even trusted process"
   local dir="${TMP_DIR}/self-protect"
@@ -1557,6 +1644,7 @@ main() {
   test_bpf_ioc_policy_sync_and_scope
   test_dry_run_survives
   test_behavior_threshold_kills
+  test_ransomware_simulator_suffix_rename_kills
   test_feature_rule_distinct_paths_kills
   test_feature_rule_distinct_paths_blocks
   test_multi_config_merges_protected_dirs
@@ -1583,6 +1671,7 @@ main() {
   test_exec_after_blocked_scores_in_dry_run
   test_rsync_trusted_false_positive_survives
   test_make_workload_false_positive_survives
+  test_trusted_tar_extract_false_positive_survives
   test_self_protect_path_kills_even_when_trusted
   log "all integration tests passed"
 }

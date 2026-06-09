@@ -64,14 +64,14 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 
 ---
 
-## 5. 已知代码缺口
+## 5. 当前限制
 
 1. BPF IOC 已从 yaml 同步到 map，path-based LSM 硬规则已加 `protected_dirs` inode 作用域；硬拒绝仍依赖 active BPF LSM
-2. `EventWrite` 已基于 agent fd→path 缓存计分，且跟踪 close/dup/fcntl 复制、相对 dirfd 与空闲淘汰；mmap 已做 fd→path 评分，io_uring 当前仅做上下文关联计分
+2. `EventWrite` 已基于 agent fd→path 缓存计分，且跟踪 close/dup/fcntl 复制、相对 dirfd 与空闲淘汰；mmap、copy_file_range、getdents64 已做 fd→path 评分，io_uring 当前仅做上下文关联计分
 3. deny 动作已用 kprobe `bpf_override_return(-EPERM)`；仍依赖内核 error injection allowlist
-4. kprobe 符号仅 x86_64
-5. blocked lineage 已支持 kill 传播与 `exec_after_blocked` 评分输出
-6. Agent 无自保护
+4. kprobe attach 已支持 amd64/arm64 syscall 符号候选并 fallback `__se_sys_*`；仍依赖目标内核导出可 attach 符号
+5. blocked lineage 已支持 kill 传播与 `exec_after_blocked` 评分输出；更完整的跨会话 lineage 仍属于后续演进
+6. 自保护已覆盖 `self_protect_paths`、systemd notify watchdog 与只读部署 unit；内核 rootkit 级对抗不是当前目标
 
 ---
 
@@ -119,3 +119,4 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 | 2026-06-09 | 完成 Phase 3.6：io_uring_enter 基础观测与集成回归 |
 | 2026-06-09 | 完成 Phase 3.3/3.4：多架构 kprobe 符号候选与 deny override 回归 |
 | 2026-06-09 | 完成 Phase 4.2/4.4：trusted rsync、make -j 误报回归与 alert/metrics schema v1 |
+| 2026-06-09 | 完成 Phase 4.2：新增 `tests/ransomware_sim.py` 复用勒索模拟器与 trusted tar 解包误报回归 |

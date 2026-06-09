@@ -102,7 +102,7 @@
 | ID | 任务 |
 |----|------|
 | 4.1 | Agent 自保护：systemd 看门狗、只读部署、保护自身路径 | 已完成：`self_protect_paths` 篡改评分、trusted 不豁免回归、systemd notify watchdog 与 read-only hardening unit |
-| 4.2 | 集成测试套件：勒索模拟脚本 + 误报场景（make -j、rsync backup） | 已开始：新增 trusted rsync 与 make -j 误报回归 |
+| 4.2 | 集成测试套件：勒索模拟脚本 + 误报场景（make -j、rsync backup） | 已完成：`tests/ransomware_sim.py` 勒索模拟器；trusted rsync、make -j、trusted tar 解包误报回归 |
 | 4.3 | 多策略 / cgroup 绑定 | 已完成：重复 `--config` 合并多策略文件；`cgroup_paths` 用户态前缀 scope + BPF cgroup id map 预过滤 |
 | 4.4 | SIEM 出口（alert JSON schema 稳定化） | 已完成：alert/metrics 增加 `schema_version:"v1"` 与 `kind` |
 | 4.5 | 网络 egress 子模块（双重勒索），可选 | 已完成：IPv4/IPv6 `connect` 观测，文件活动后非 allowlist 外联评分 |

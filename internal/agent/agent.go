@@ -29,6 +29,8 @@ type Agent struct {
 	procs     map[uint32]*procState
 	fdMu      sync.RWMutex
 	fdPaths   map[fdKey]fdState
+	procMu    sync.RWMutex
+	procInfos map[uint32]cachedProcInfo
 	blockedMu sync.RWMutex
 	blocked   map[uint32]time.Time
 	blacklist *blacklist
@@ -55,6 +57,11 @@ type fdKey struct {
 
 type fdState struct {
 	Path     string
+	LastSeen time.Time
+}
+
+type cachedProcInfo struct {
+	Info     procInfo
 	LastSeen time.Time
 }
 
@@ -133,6 +140,7 @@ func New(policy config.Policy, s *sensor.Sensor, options Options) *Agent {
 		options:   options,
 		procs:     make(map[uint32]*procState),
 		fdPaths:   make(map[fdKey]fdState),
+		procInfos: make(map[uint32]cachedProcInfo),
 		blocked:   make(map[uint32]time.Time),
 		blacklist: bl,
 		hashes:    newHashCache(),
@@ -196,6 +204,10 @@ func (a *Agent) handle(ev sensor.Event) {
 
 	if !a.inPolicyCgroup(ev.TGID) {
 		return
+	}
+
+	if ev.Type == sensor.EventExec {
+		a.cacheExecInfo(ev)
 	}
 
 	if a.isTrustedEvent(ev) && !a.backupSensitiveEvent(ev) && !a.selfProtectSensitiveEvent(ev) {
@@ -714,6 +726,15 @@ func (a *Agent) pruneIdle(now time.Time) {
 	}
 	a.fdMu.Unlock()
 
+	a.procMu.Lock()
+	for tgid, cached := range a.procInfos {
+		if cached.LastSeen.IsZero() || now.Sub(cached.LastSeen) <= ttl {
+			continue
+		}
+		delete(a.procInfos, tgid)
+	}
+	a.procMu.Unlock()
+
 	a.blockedMu.Lock()
 	for tgid, seen := range a.blocked {
 		if seen.IsZero() {
@@ -1072,7 +1093,7 @@ func (a *Agent) isTrustedEvent(ev sensor.Event) bool {
 	}
 	exe := ""
 	if len(a.policy.TrustedExePaths) > 0 {
-		if info, err := readProc(ev.TGID); err == nil {
+		if info, err := a.procInfo(ev.TGID, ev.Timestamp); err == nil {
 			exe = info.Exe
 		}
 	}
@@ -1112,6 +1133,65 @@ func containsUID(uids []uint32, uid uint32) bool {
 		}
 	}
 	return false
+}
+
+func (a *Agent) procInfo(tgid uint32, seen time.Time) (procInfo, error) {
+	if seen.IsZero() {
+		seen = time.Now()
+	}
+	a.procMu.RLock()
+	cached, ok := a.procInfos[tgid]
+	a.procMu.RUnlock()
+	if ok && cached.Info.Exe != "" {
+		a.procMu.Lock()
+		cached.LastSeen = seen
+		a.procInfos[tgid] = cached
+		a.procMu.Unlock()
+		return cached.Info, nil
+	}
+
+	info, err := readProc(tgid)
+	if err != nil {
+		if ok {
+			a.procMu.Lock()
+			cached.LastSeen = seen
+			a.procInfos[tgid] = cached
+			a.procMu.Unlock()
+			return cached.Info, nil
+		}
+		return procInfo{}, err
+	}
+	a.procMu.Lock()
+	a.procInfos[tgid] = cachedProcInfo{Info: info, LastSeen: seen}
+	a.procMu.Unlock()
+	return info, nil
+}
+
+func (a *Agent) cacheProcInfo(tgid uint32, seen time.Time) {
+	_, _ = a.procInfo(tgid, seen)
+}
+
+func (a *Agent) cacheExecInfo(ev sensor.Event) {
+	if ev.Path == "" {
+		a.cacheProcInfo(ev.TGID, ev.Timestamp)
+		return
+	}
+	seen := ev.Timestamp
+	if seen.IsZero() {
+		seen = time.Now()
+	}
+	a.procMu.Lock()
+	a.procInfos[ev.TGID] = cachedProcInfo{
+		Info: procInfo{
+			PID:  ev.PID,
+			TGID: ev.TGID,
+			UID:  ev.UID,
+			Comm: ev.Comm,
+			Exe:  ev.Path,
+		},
+		LastSeen: seen,
+	}
+	a.procMu.Unlock()
 }
 
 func (a *Agent) hasSuspiciousExtension(path string) bool {
