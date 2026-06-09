@@ -16,6 +16,14 @@ char LICENSE[] SEC("license") = "Dual MIT/GPL";
 #define F_DUPFD_CLOEXEC 1030
 #define SIGKILL 9
 #define NAME_MAX_LEN 128
+#define MAX_DENTRY_DEPTH 8
+#define FNV_OFFSET 14695981039346656037ULL
+#define FNV_PRIME 1099511628211ULL
+
+struct dir_key {
+	__u64 dev;
+	__u64 ino;
+};
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -35,6 +43,27 @@ struct {
 	__type(key, __u32);
 	__type(value, struct block_entry);
 } blocked_tgids SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 256);
+	__type(key, __u64);
+	__type(value, __u8);
+} ioc_extensions SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 256);
+	__type(key, __u64);
+	__type(value, __u8);
+} ioc_ransom_notes SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 256);
+	__type(key, struct dir_key);
+	__type(value, __u8);
+} protected_dirs SEC(".maps");
 
 struct pending_open {
 	__s32 dirfd;
@@ -140,113 +169,39 @@ static __always_inline int kill_blocked_syscall(void)
 	return 0;
 }
 
-static __always_inline int match_char(const unsigned char *name, __u32 off, char want)
+static __always_inline char lower_char(char c)
 {
-	char got = 0;
-
-	if (off >= NAME_MAX_LEN)
-		return 0;
-	if (bpf_probe_read_kernel(&got, sizeof(got), name + off) != 0)
-		return 0;
-	return got == want;
+	if (c >= 'A' && c <= 'Z')
+		return c + 32;
+	return c;
 }
 
-static __always_inline int suspicious_name(const unsigned char *name, __u32 len)
+static __always_inline int protected_path(const struct path *path)
 {
-	__u32 start;
+	struct dentry *dentry = BPF_CORE_READ(path, dentry);
 
-	if (len == 0 || len >= NAME_MAX_LEN)
-		return 0;
+	for (__u32 i = 0; i < MAX_DENTRY_DEPTH; i++) {
+		struct inode *inode;
+		struct super_block *sb;
+		struct dentry *parent;
+		struct dir_key key = {};
 
-	start = len - 7;
-	if (len > 7 && match_char(name, start, '.') && match_char(name, start + 1, 'l') &&
-	    match_char(name, start + 2, 'o') && match_char(name, start + 3, 'c') &&
-	    match_char(name, start + 4, 'k') && match_char(name, start + 5, 'e') &&
-	    match_char(name, start + 6, 'd'))
-		return 1;
-
-	start = len - 10;
-	if (len > 10 && match_char(name, start, '.') && match_char(name, start + 1, 'e') &&
-	    match_char(name, start + 2, 'n') && match_char(name, start + 3, 'c') &&
-	    match_char(name, start + 4, 'r') && match_char(name, start + 5, 'y') &&
-	    match_char(name, start + 6, 'p') && match_char(name, start + 7, 't') &&
-	    match_char(name, start + 8, 'e') && match_char(name, start + 9, 'd'))
-		return 1;
-
-	start = len - 6;
-	if (len > 6 && match_char(name, start, '.') && match_char(name, start + 1, 'c') &&
-	    match_char(name, start + 2, 'r') && match_char(name, start + 3, 'y') &&
-	    match_char(name, start + 4, 'p') && match_char(name, start + 5, 't'))
-		return 1;
-
-	start = len - 7;
-	if (len > 7 && match_char(name, start, '.') && match_char(name, start + 1, 'c') &&
-	    match_char(name, start + 2, 'r') && match_char(name, start + 3, 'y') &&
-	    match_char(name, start + 4, 'p') && match_char(name, start + 5, 't') &&
-	    match_char(name, start + 6, 'o'))
-		return 1;
-
-	start = len - 4;
-	if (len > 4 && match_char(name, start, '.') && match_char(name, start + 1, 'e') &&
-	    match_char(name, start + 2, 'n') && match_char(name, start + 3, 'c'))
-		return 1;
-
-	if (len == 22 && match_char(name, 0, 'R') && match_char(name, 1, 'E') &&
-	    match_char(name, 2, 'A') && match_char(name, 3, 'D') && match_char(name, 4, 'M') &&
-	    match_char(name, 5, 'E') && match_char(name, 6, '_') && match_char(name, 7, 'F') &&
-	    match_char(name, 8, 'O') && match_char(name, 9, 'R') && match_char(name, 10, '_') &&
-	    match_char(name, 11, 'D') && match_char(name, 12, 'E') && match_char(name, 13, 'C') &&
-	    match_char(name, 14, 'R') && match_char(name, 15, 'Y') && match_char(name, 16, 'P') &&
-	    match_char(name, 17, 'T') && match_char(name, 18, '.') && match_char(name, 19, 't') &&
-	    match_char(name, 20, 'x') && match_char(name, 21, 't'))
-		return 1;
-
-	if (len == 21 && match_char(name, 0, 'R') && match_char(name, 1, 'E') &&
-	    match_char(name, 2, 'A') && match_char(name, 3, 'D') && match_char(name, 4, 'M') &&
-	    match_char(name, 5, 'E') && match_char(name, 6, '_') && match_char(name, 7, 'T') &&
-	    match_char(name, 8, 'O') && match_char(name, 9, '_') && match_char(name, 10, 'D') &&
-	    match_char(name, 11, 'E') && match_char(name, 12, 'C') && match_char(name, 13, 'R') &&
-	    match_char(name, 14, 'Y') && match_char(name, 15, 'P') && match_char(name, 16, 'T') &&
-	    match_char(name, 17, '.') && match_char(name, 18, 't') && match_char(name, 19, 'x') &&
-	    match_char(name, 20, 't'))
-		return 1;
-
-	if (len == 24 && match_char(name, 0, 'D') && match_char(name, 1, 'E') &&
-	    match_char(name, 2, 'C') && match_char(name, 3, 'R') && match_char(name, 4, 'Y') &&
-	    match_char(name, 5, 'P') && match_char(name, 6, 'T') && match_char(name, 7, '_') &&
-	    match_char(name, 8, 'I') && match_char(name, 9, 'N') && match_char(name, 10, 'S') &&
-	    match_char(name, 11, 'T') && match_char(name, 12, 'R') && match_char(name, 13, 'U') &&
-	    match_char(name, 14, 'C') && match_char(name, 15, 'T') && match_char(name, 16, 'I') &&
-	    match_char(name, 17, 'O') && match_char(name, 18, 'N') && match_char(name, 19, 'S') &&
-	    match_char(name, 20, '.') && match_char(name, 21, 't') && match_char(name, 22, 'x') &&
-	    match_char(name, 23, 't'))
-		return 1;
-
-	if (len == 17 && match_char(name, 0, 'R') && match_char(name, 1, 'E') &&
-	    match_char(name, 2, 'C') && match_char(name, 3, 'O') && match_char(name, 4, 'V') &&
-	    match_char(name, 5, 'E') && match_char(name, 6, 'R') && match_char(name, 7, '_') &&
-	    match_char(name, 8, 'F') && match_char(name, 9, 'I') && match_char(name, 10, 'L') &&
-	    match_char(name, 11, 'E') && match_char(name, 12, 'S') && match_char(name, 13, '.') &&
-	    match_char(name, 14, 't') && match_char(name, 15, 'x') && match_char(name, 16, 't'))
-		return 1;
-
-	if (len == 18 && match_char(name, 0, 'R') && match_char(name, 1, 'E') &&
-	    match_char(name, 2, 'C') && match_char(name, 3, 'O') && match_char(name, 4, 'V') &&
-	    match_char(name, 5, 'E') && match_char(name, 6, 'R') && match_char(name, 7, '_') &&
-	    match_char(name, 8, 'F') && match_char(name, 9, 'I') && match_char(name, 10, 'L') &&
-	    match_char(name, 11, 'E') && match_char(name, 12, 'S') && match_char(name, 13, '.') &&
-	    match_char(name, 14, 'h') && match_char(name, 15, 't') && match_char(name, 16, 'm') &&
-	    match_char(name, 17, 'l'))
-		return 1;
-
-	if (len == 18 && match_char(name, 0, 'H') && match_char(name, 1, 'O') &&
-	    match_char(name, 2, 'W') && match_char(name, 3, '_') && match_char(name, 4, 'T') &&
-	    match_char(name, 5, 'O') && match_char(name, 6, '_') && match_char(name, 7, 'D') &&
-	    match_char(name, 8, 'E') && match_char(name, 9, 'C') && match_char(name, 10, 'R') &&
-	    match_char(name, 11, 'Y') && match_char(name, 12, 'P') && match_char(name, 13, 'T') &&
-	    match_char(name, 14, '.') && match_char(name, 15, 't') && match_char(name, 16, 'x') &&
-	    match_char(name, 17, 't'))
-		return 1;
+		if (!dentry)
+			return 0;
+		inode = BPF_CORE_READ(dentry, d_inode);
+		if (inode) {
+			sb = BPF_CORE_READ(inode, i_sb);
+			if (sb)
+				key.dev = BPF_CORE_READ(sb, s_dev);
+			key.ino = BPF_CORE_READ(inode, i_ino);
+			if (bpf_map_lookup_elem(&protected_dirs, &key))
+				return 1;
+		}
+		parent = BPF_CORE_READ(dentry, d_parent);
+		if (!parent || parent == dentry)
+			return 0;
+		dentry = parent;
+	}
 	return 0;
 }
 
@@ -254,6 +209,9 @@ static __always_inline int suspicious_dentry(struct dentry *dentry)
 {
 	const unsigned char *dname;
 	__u32 len;
+	__u64 full_hash = FNV_OFFSET;
+	__u64 ext_hash = 0;
+	__u8 has_ext = 0;
 
 	dname = BPF_CORE_READ(dentry, d_name.name);
 	if (!dname)
@@ -261,7 +219,38 @@ static __always_inline int suspicious_dentry(struct dentry *dentry)
 	len = BPF_CORE_READ(dentry, d_name.len);
 	if (len == 0 || len >= NAME_MAX_LEN)
 		return 0;
-	return suspicious_name(dname, len);
+
+	for (__u32 i = 0; i < NAME_MAX_LEN; i++) {
+		char got = 0;
+		char lower;
+
+		if (i >= len)
+			break;
+		if (bpf_probe_read_kernel(&got, sizeof(got), dname + i) != 0)
+			return 0;
+		lower = lower_char(got);
+		full_hash ^= (__u8)lower;
+		full_hash *= FNV_PRIME;
+		if (got == '.') {
+			has_ext = 1;
+			ext_hash = FNV_OFFSET;
+		}
+		if (has_ext) {
+			ext_hash ^= (__u8)lower;
+			ext_hash *= FNV_PRIME;
+		}
+	}
+
+	if (bpf_map_lookup_elem(&ioc_ransom_notes, &full_hash))
+		return 1;
+	if (has_ext && bpf_map_lookup_elem(&ioc_extensions, &ext_hash))
+		return 1;
+	return 0;
+}
+
+static __always_inline int suspicious_path_dentry(const struct path *path, struct dentry *dentry)
+{
+	return protected_path(path) && suspicious_dentry(dentry);
 }
 
 static __always_inline void emit_block_event(__u32 op, const char *path)
@@ -379,11 +368,6 @@ int BPF_PROG(enforce_file_open, struct file *file)
 
 	int flags = BPF_CORE_READ(file, f_flags);
 	if ((flags & O_TRUNC) || ((flags & O_ACCMODE) == O_WRONLY) || ((flags & O_ACCMODE) == O_RDWR)) {
-		struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
-		if (suspicious_dentry(dentry)) {
-			emit_block_event(EVENT_OPEN, 0);
-			return -EPERM;
-		}
 		entry = current_block_entry();
 		if (entry) {
 			emit_block_event(EVENT_OPEN, 0);
@@ -425,7 +409,7 @@ int BPF_PROG(enforce_path_rename, const struct path *old_dir, struct dentry *old
 {
 	struct block_entry *entry;
 
-	if (suspicious_dentry(new_dentry)) {
+	if (suspicious_path_dentry(new_dir, new_dentry)) {
 		emit_block_event(EVENT_RENAME, 0);
 		return -EPERM;
 	}
@@ -443,10 +427,6 @@ int BPF_PROG(enforce_inode_rename, struct inode *old_dir, struct dentry *old_den
 {
 	struct block_entry *entry;
 
-	if (suspicious_dentry(new_dentry)) {
-		emit_block_event(EVENT_RENAME, 0);
-		return -EPERM;
-	}
 	entry = current_block_entry();
 	if (entry) {
 		emit_block_event(EVENT_RENAME, 0);
@@ -460,7 +440,7 @@ int BPF_PROG(enforce_path_mknod, const struct path *dir, struct dentry *dentry, 
 {
 	struct block_entry *entry;
 
-	if (suspicious_dentry(dentry)) {
+	if (suspicious_path_dentry(dir, dentry)) {
 		emit_block_event(EVENT_OPEN, 0);
 		return -EPERM;
 	}
@@ -477,10 +457,6 @@ int BPF_PROG(enforce_inode_create, struct inode *dir, struct dentry *dentry, umo
 {
 	struct block_entry *entry;
 
-	if (suspicious_dentry(dentry)) {
-		emit_block_event(EVENT_OPEN, 0);
-		return -EPERM;
-	}
 	entry = current_block_entry();
 	if (entry) {
 		emit_block_event(EVENT_OPEN, 0);
@@ -494,7 +470,7 @@ int BPF_PROG(enforce_path_unlink, const struct path *dir, struct dentry *dentry)
 {
 	struct block_entry *entry;
 
-	if (suspicious_dentry(dentry)) {
+	if (suspicious_path_dentry(dir, dentry)) {
 		emit_block_event(EVENT_UNLINK, 0);
 		return -EPERM;
 	}

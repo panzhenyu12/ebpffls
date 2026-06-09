@@ -4,11 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
+	"log"
+	"os"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
+	"github.com/panzhenyu/ebpffls/internal/config"
 )
 
 const (
@@ -24,19 +30,28 @@ type BlockEntry struct {
 	Action    uint32
 }
 
+type dirKey struct {
+	Dev uint64
+	Ino uint64
+}
+
 type Sensor struct {
 	objects ransomwareObjects
 	links   []link.Link
 	reader  *ringbuf.Reader
 }
 
-func New() (*Sensor, error) {
+func New(policy config.Policy) (*Sensor, error) {
 	var objs ransomwareObjects
 	if err := loadRansomwareObjects(&objs, nil); err != nil {
 		return nil, fmt.Errorf("load bpf objects: %w", err)
 	}
 
 	s := &Sensor{objects: objs}
+	if err := s.ConfigurePolicy(policy); err != nil {
+		s.Close()
+		return nil, err
+	}
 
 	tracepoints := []struct {
 		category string
@@ -154,12 +169,121 @@ func (s *Sensor) UnblockTGID(tgid uint32) error {
 	return s.objects.BlockedTgids.Delete(tgid)
 }
 
+func (s *Sensor) ConfigurePolicy(policy config.Policy) error {
+	extensions, err := syncHashSet(s.objects.IocExtensions, policy.SuspiciousExtensions, iocHash)
+	if err != nil {
+		return fmt.Errorf("sync suspicious extensions: %w", err)
+	}
+	notes, err := syncHashSet(s.objects.IocRansomNotes, policy.RansomNoteNames, iocHash)
+	if err != nil {
+		return fmt.Errorf("sync ransom note names: %w", err)
+	}
+	protected, err := syncProtectedDirs(s.objects.ProtectedDirs, policy.ProtectedDirs)
+	if err != nil {
+		return fmt.Errorf("sync protected dirs: %w", err)
+	}
+	log.Printf("synced_bpf_policy ioc_extensions=%d ransom_notes=%d protected_dirs=%d", extensions, notes, protected)
+	return nil
+}
+
 func (s *Sensor) RingbufDrops() (uint64, error) {
 	var drops uint64
 	if err := s.objects.RingbufDrops.Lookup(uint32(0), &drops); err != nil {
 		return 0, err
 	}
 	return drops, nil
+}
+
+func syncHashSet(m *ebpf.Map, values []string, hash func(string) uint64) (int, error) {
+	if err := clearMap(m); err != nil {
+		return 0, err
+	}
+	var one uint8 = 1
+	count := 0
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := hash(value)
+		if err := m.Put(key, one); err != nil {
+			return 0, err
+		}
+		count++
+	}
+	return count, nil
+}
+
+func syncProtectedDirs(m *ebpf.Map, dirs []string) (int, error) {
+	if err := clearMap(m); err != nil {
+		return 0, err
+	}
+	var one uint8 = 1
+	count := 0
+	for _, dir := range dirs {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		info, err := os.Stat(dir)
+		if err != nil {
+			log.Printf("skip protected_dir=%q for BPF IOC scope: %v", dir, err)
+			continue
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			log.Printf("skip protected_dir=%q for BPF IOC scope: missing stat data", dir)
+			continue
+		}
+		key := dirKey{Dev: uint64(stat.Dev), Ino: stat.Ino}
+		if err := m.Put(key, one); err != nil {
+			return 0, err
+		}
+		count++
+	}
+	return count, nil
+}
+
+func clearMap(m *ebpf.Map) error {
+	var keys []any
+	var key any
+	var value any
+	switch m.KeySize() {
+	case 8:
+		var k uint64
+		key = &k
+	case 16:
+		var k dirKey
+		key = &k
+	default:
+		return fmt.Errorf("unsupported key size %d", m.KeySize())
+	}
+	var v uint8
+	value = &v
+	it := m.Iterate()
+	for it.Next(key, value) {
+		switch typed := key.(type) {
+		case *uint64:
+			keys = append(keys, *typed)
+		case *dirKey:
+			keys = append(keys, *typed)
+		}
+	}
+	if err := it.Err(); err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if err := m.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+func iocHash(value string) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(strings.ToLower(value)))
+	return h.Sum64()
 }
 
 func (s *Sensor) Events(ctx context.Context) (<-chan Event, <-chan error) {

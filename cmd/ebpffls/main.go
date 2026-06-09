@@ -57,7 +57,7 @@ func monitor(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	s, err := sensor.New()
+	s, err := sensor.New(policy)
 	if err != nil {
 		return fmt.Errorf("%w; run as root and ensure BPF LSM is active in /sys/kernel/security/lsm", err)
 	}

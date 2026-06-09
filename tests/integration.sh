@@ -154,12 +154,79 @@ wait_for_log() {
   fail "${name}: expected log pattern ${pattern}"
 }
 
+bpf_lsm_active() {
+  [[ -r /sys/kernel/security/lsm ]] && grep -qw bpf /sys/kernel/security/lsm
+}
+
 write_py() {
   local path="$1"
   shift
   cat >"${path}" <<'PY'
 PY
   cat >>"${path}"
+}
+
+test_bpf_ioc_policy_sync_and_scope() {
+  log "BPF IOC maps sync from policy and scope to protected dirs"
+  local dir="${TMP_DIR}/bpf-ioc"
+  local outside="${TMP_DIR}/bpf-ioc-outside"
+  local bl="${TMP_DIR}/bpf-ioc-blacklist.txt"
+  local policy="${TMP_DIR}/bpf-ioc.yaml"
+  local agent_log="${TMP_DIR}/bpf-ioc-agent.log"
+  mkdir -p "${dir}" "${outside}"
+  : >"${bl}"
+  cat >"${policy}" <<YAML
+name: bpf-ioc-sync-test
+window: 10s
+threshold: 45
+action: kill
+block_ttl: 1m
+protected_dirs:
+  - ${dir}
+backup_dirs: []
+trusted_processes:
+  - ebpffls
+blacklist_scan: 30s
+blacklist_hashes: []
+blacklist_hash_files:
+  - ${bl}
+suspicious_extensions:
+  - .vaultx
+ransom_note_names:
+  - PAY_ME_NOW.txt
+scores:
+  write: 1
+  truncate: 6
+  rename: 8
+  unlink: 8
+  suspicious_extension: 10
+  ransom_note: 20
+  backup_destroy: 20
+  high_rate_bonus: 15
+  exec_after_blocked: 10
+YAML
+  start_agent "${policy}" "${agent_log}" dry-run
+  wait_for_log "${agent_log}" 'synced_bpf_policy ioc_extensions=1 ransom_notes=1 protected_dirs=1' "BPF IOC policy sync"
+
+  if bpf_lsm_active; then
+    expect_survives "unprotected suspicious extension scoped out" python3 - <<PY
+with open("${outside}/note.vaultx", "w") as f:
+    f.write("outside")
+PY
+    set +e
+    python3 - <<PY
+with open("${dir}/note.vaultx", "w") as f:
+    f.write("protected")
+PY
+    local rc=$?
+    set -e
+    if [[ "${rc}" -eq 0 ]]; then
+      fail "protected suspicious extension: expected BPF LSM denial"
+    fi
+  else
+    log "BPF LSM not active; hard-deny scope check skipped"
+  fi
+  stop_agent
 }
 
 build_badloop() {
@@ -702,6 +769,7 @@ main() {
   [[ -x "${BIN}" ]] || fail "missing binary ${BIN}; run make build first"
   build_badloop
   build_spoof
+  test_bpf_ioc_policy_sync_and_scope
   test_dry_run_survives
   test_behavior_threshold_kills
   test_fd_write_path_scoring_kills

@@ -64,7 +64,7 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 
 ## 5. 已知代码缺口
 
-1. BPF IOC 硬编码，与 yaml 不同步；硬规则无 `protected_dirs` 作用域；且依赖 active BPF LSM
+1. BPF IOC 已从 yaml 同步到 map，path-based LSM 硬规则已加 `protected_dirs` inode 作用域；硬拒绝仍依赖 active BPF LSM
 2. `EventWrite` 已基于 agent fd→path 缓存计分，且跟踪 close/dup/fcntl 复制、相对 dirfd 与空闲淘汰；mmap/io_uring 路径评分仍待补齐
 3. kprobe 仅 `bpf_send_signal`，不 `bpf_override_return`
 4. kprobe 符号仅 x86_64
@@ -107,3 +107,4 @@ ebpffls 是 **四轨混合防勒索** 运行时守卫：
 | 2026-06-08 | 初版合并 review |
 | 2026-06-08 | 文档对齐；新增调用抽象与 roadmap 引用 |
 | 2026-06-09 | 完成 Phase 1.7：用户态状态空闲淘汰与 ringbuf drop 增量日志 |
+| 2026-06-09 | 完成 Phase 1.1/1.2：yaml IOC 同步 BPF map，path-based LSM IOC 增加 protected dir 作用域 |

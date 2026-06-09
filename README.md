@@ -12,7 +12,7 @@ Four complementary defense tracks:
 
 | Track | What it does |
 |-------|----------------|
-| **IOC fast path** | BPF LSM can instantly deny suspicious extensions and ransom-note filenames when `bpf` LSM is active |
+| **IOC fast path** | YAML-synced BPF maps let active BPF LSM deny suspicious extensions and ransom-note filenames under protected directories |
 | **Behavior scoring** | Go agent scores bulk mutation on configured protected directories |
 | **Hash blacklist** | Userspace SHA-256 match against known ransomware samples |
 | **Enforcement** | Marked TGIDs are killed via x86_64 syscall kprobes; BPF LSM adds deny semantics when active |
@@ -83,6 +83,10 @@ sudo ./bin/ebpffls monitor --config configs/ransomware.yaml --debug-events
 
 The BPF sensor counts ring buffer reserve failures in a map, and the agent logs
 `ringbuf_drops total=<n> delta=<n>` when drops increase.
+
+At startup, the agent syncs `suspicious_extensions`, `ransom_note_names`, and
+existing `protected_dirs` into BPF maps for scoped LSM IOC enforcement when BPF
+LSM is active.
 
 ## Policy model (behavior track)
 

@@ -19,7 +19,7 @@
 - 文档曾与代码不一致（已在本次更新中对齐）
 - `write` 已基于 agent fd→path 缓存计分；close/dup 与相对 dirfd 已跟踪
 - `procState`、fd→path 与 blocked lineage 缓存已按空闲 TTL 定期淘汰；ringbuf reserve 失败已有内核计数和用户态增量日志
-- BPF IOC 与 yaml 不同步；硬规则无 `protected_dirs` 作用域
+- BPF IOC 已从 yaml 同步到 map；path-based LSM IOC 已受 `protected_dirs` inode 作用域约束
 - blocked lineage exec 已做 kill 传播；`exec_after_blocked` 作为评分规则未实现
 - 仅 x86_64 kprobe；无 `bpf_override_return` 真 deny
 - 无 mmap/io_uring/scan 类观测
@@ -32,8 +32,8 @@
 
 | ID | 任务 | 产出 | 优先级 |
 |----|------|------|--------|
-| 1.1 | 统一 IOC 策略源：启动时将 yaml `suspicious_extensions`、`ransom_note_names` 写入 BPF map | 删/减 BPF 硬编码 | P0 |
-| 1.2 | LSM 硬规则增加 `protected_dirs` 前缀 map，IOC 仅在保护域生效 | 降误杀 | P0 |
+| 1.1 | 统一 IOC 策略源：启动时将 yaml `suspicious_extensions`、`ransom_note_names` 写入 BPF map | 已完成：Go 启动同步 IOC hash map | P0 |
+| 1.2 | LSM 硬规则增加 `protected_dirs` 前缀 map，IOC 仅在保护域生效 | 已完成：path-based LSM IOC 使用 protected dir inode 作用域 | P0 |
 | 1.3 | kprobe 增加 `__x64_sys_write/pwrite64/writev`；修复黑名单扫描读 `/proc/pid/status` Tgid | 已完成 | P0 |
 | 1.4 | 恢复 `EventWrite` 路径感知评分（fd→path 缓存或 BPF 带 path） | 已完成：open/openat/openat2 fd→path 缓存 | P0 |
 | 1.5 | 高置信语义规则即时 `BlockTGID`：保护域 +（赎金信 \| 可疑后缀 rename） | 已完成 | P0 |
@@ -42,8 +42,8 @@
 
 ### Phase 1 验收标准
 
-- [ ] 修改 yaml 扩展名后，BPF 硬规则同步生效
-- [ ] `/tmp/test.locked` 不写保护域时不被拦；`/home/u/f.locked` 被拦
+- [x] 修改 yaml 扩展名/赎金信名后，BPF IOC map 同步生效
+- [x] path-based BPF LSM IOC 使用 protected dir inode 作用域；active BPF LSM 环境下覆盖保护域内外硬拒绝验收
 - [x] 标记 TGID 后 `write` 触发 SIGKILL 或 LSM 拒绝
 - [x] 原地加密模拟（open+write 扇出）能在阈值内告警/阻断
 - [x] 单 fd 重复 `write` 可通过 fd→path 评分触发阻断

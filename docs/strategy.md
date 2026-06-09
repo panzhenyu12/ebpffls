@@ -17,7 +17,7 @@ than static signatures. ebpffls therefore uses **four complementary tracks**:
 
 | Track | Mechanism | Best against |
 |-------|-----------|--------------|
-| 1 — IOC fast path | BPF LSM hard deny on suspicious names, when active | Suffix renames, ransom notes |
+| 1 — IOC fast path | YAML-synced BPF IOC maps plus scoped BPF LSM hard deny on path-based hooks, when active | Suffix renames, ransom notes |
 | 2 — Behavior slow path | Sliding-window score on protected paths | Zero-day bulk encryption |
 | 3 — Hash blacklist | SHA-256 of executables in userspace | Known samples |
 | 4 — Enforcement | kprobes on marked TGIDs; LSM deny when active | Stopping an already-identified process |
@@ -57,6 +57,14 @@ Hash blacklist matches always enforce kill (independent of policy action).
 Protected-scope high-confidence IOC events, such as ransom-note creation or
 rename to a suspicious extension, also enforce immediately without waiting for
 the behavior threshold.
+
+At startup, the agent syncs `suspicious_extensions`, `ransom_note_names`, and
+existing `protected_dirs` into BPF maps. The BPF LSM IOC path uses lower-case
+filename hashes and protected directory inode/dev keys, so path-based create,
+rename, and unlink hooks only hard-deny suspicious names under configured
+protected directories. `file_open` keeps only marked-TGID enforcement because
+full path-scoped IOC matching there exceeds verifier complexity on the reference
+kernel; open/write behavior remains covered by tracepoint scoring.
 
 On the current reference server, `CONFIG_BPF_LSM=y` is available but `bpf` is
 not listed in `/sys/kernel/security/lsm`, so the reliable enforcement path is
@@ -107,7 +115,7 @@ blocked-lineage memory are pruned after an idle TTL derived from `window` and
 `block_ttl`. Ring buffer reserve failures are counted in BPF and logged by the
 agent as increasing `ringbuf_drops` totals.
 
-**Not yet implemented:** `exec_after_blocked` as a score-only rule, yaml-driven BPF IOC maps.
+**Not yet implemented:** `exec_after_blocked` as a score-only rule.
 
 ## Architecture diagram
 
