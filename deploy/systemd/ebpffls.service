@@ -5,10 +5,12 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 ExecStart=/usr/local/bin/ebpffls monitor --config /etc/ebpffls/ransomware.yaml --dry-run=false
 Restart=always
 RestartSec=5s
+WatchdogSec=30s
 KillMode=process
 LimitMEMLOCK=infinity
 NoNewPrivileges=yes

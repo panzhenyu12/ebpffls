@@ -11,6 +11,7 @@ import (
 	"github.com/panzhenyu/ebpffls/internal/agent"
 	"github.com/panzhenyu/ebpffls/internal/config"
 	"github.com/panzhenyu/ebpffls/internal/sensor"
+	"github.com/panzhenyu/ebpffls/internal/systemd"
 	"github.com/spf13/pflag"
 )
 
@@ -64,6 +65,14 @@ func monitor(args []string) error {
 	defer s.Close()
 
 	log.Printf("started policy=%s action=%s dry_run=%t window=%s threshold=%d", policy.Name, policy.Action, *dryRun, policy.Window, policy.Threshold)
+	if notifier, ok := systemd.NewFromEnv(); ok {
+		if err := notifier.Ready(); err != nil {
+			log.Printf("systemd notify READY failed: %v", err)
+		} else {
+			log.Printf("systemd notify READY sent")
+		}
+		go notifier.StartWatchdog(ctx)
+	}
 	a := agent.New(policy, s, agent.Options{DryRun: *dryRun, DebugEvents: *debugEvents})
 	return a.Run(ctx)
 }

@@ -9,10 +9,16 @@ fail() {
   exit 1
 }
 
+grep -q '^Type=notify$' "${UNIT}" ||
+  fail "service must use systemd notify readiness"
+grep -q '^NotifyAccess=main$' "${UNIT}" ||
+  fail "service must scope notify access to the main process"
 grep -q '^ExecStart=/usr/local/bin/ebpffls monitor --config /etc/ebpffls/ransomware.yaml --dry-run=false$' "${UNIT}" ||
   fail "service must run monitor with enforcement enabled"
 grep -q '^Restart=always$' "${UNIT}" ||
   fail "service must restart automatically"
+grep -q '^WatchdogSec=30s$' "${UNIT}" ||
+  fail "service must enable systemd watchdog"
 grep -q '^ProtectSystem=strict$' "${UNIT}" ||
   fail "service must enable strict filesystem protection"
 grep -q '^ReadWritePaths=/run /var/log /var/lib/ebpffls$' "${UNIT}" ||

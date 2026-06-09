@@ -733,6 +733,69 @@ PY
   stop_agent
 }
 
+test_systemd_watchdog_notify() {
+  log "systemd notify READY and WATCHDOG messages are emitted"
+  local dir="${TMP_DIR}/systemd-watchdog"
+  local bl="${TMP_DIR}/systemd-watchdog-blacklist.txt"
+  local policy="${TMP_DIR}/systemd-watchdog.yaml"
+  local agent_log="${TMP_DIR}/systemd-watchdog-agent.log"
+  local sock="${TMP_DIR}/systemd-notify.sock"
+  local recv="${TMP_DIR}/systemd-notify.log"
+  local server="${TMP_DIR}/systemd-notify-server.py"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" systemd-watchdog-test 100 log "${dir}" "${bl}"
+  cat >"${server}" <<PY
+import os
+import socket
+import sys
+import time
+
+sock_path = sys.argv[1]
+out_path = sys.argv[2]
+try:
+    os.unlink(sock_path)
+except FileNotFoundError:
+    pass
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+sock.bind(sock_path)
+sock.settimeout(5)
+deadline = time.time() + 5
+seen = set()
+with open(out_path, "w") as out:
+    while time.time() < deadline and not {"READY=1", "WATCHDOG=1"}.issubset(seen):
+        try:
+            data = sock.recv(128).decode()
+        except socket.timeout:
+            break
+        seen.add(data)
+        out.write(data + "\\n")
+        out.flush()
+sock.close()
+PY
+  python3 "${server}" "${sock}" "${recv}" &
+  local notify_pid="$!"
+  for _ in $(seq 1 50); do
+    [[ -S "${sock}" ]] && break
+    sleep 0.1
+  done
+  [[ -S "${sock}" ]] || fail "notify socket was not created"
+
+  stop_agent
+  NOTIFY_SOCKET="${sock}" WATCHDOG_USEC=2000000 "${BIN}" monitor --config "${policy}" --dry-run=false >"${agent_log}" 2>&1 &
+  AGENT_PID="$!"
+  sleep 1
+  kill -0 "${AGENT_PID}" 2>/dev/null || {
+    cat "${agent_log}" >&2 || true
+    fail "agent failed to start for systemd watchdog"
+  }
+  wait "${notify_pid}" || true
+  grep -q '^READY=1$' "${recv}" || fail "missing READY=1 systemd notify"
+  grep -q '^WATCHDOG=1$' "${recv}" || fail "missing WATCHDOG=1 systemd notify"
+  wait_for_log "${agent_log}" 'systemd notify READY sent' "systemd ready log"
+  stop_agent
+}
+
 test_deny_override_rejects_marked_syscall() {
   log "deny action uses bpf_override_return for marked syscalls"
   local dir="${TMP_DIR}/deny-override"
@@ -1421,6 +1484,7 @@ main() {
   test_writable_mmap_scores_and_kills
   test_io_uring_after_protected_activity_scores
   test_network_egress_after_file_activity_scores
+  test_systemd_watchdog_notify
   test_deny_override_rejects_marked_syscall
   test_fd_write_path_scoring_kills
   test_fd_lifecycle_tracking

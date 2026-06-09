@@ -103,8 +103,8 @@ solely because the process is trusted.
 directories that should not be modified at runtime. Write-open, fd writes,
 rename, unlink, truncate/ftruncate, and writable mmap against those paths score
 with `scores.self_protect` even when the process otherwise matches the trusted
-identity model. This is the first self-protection layer; systemd watchdog and
-read-only deployment hardening remain deployment tasks.
+identity model. The packaged unit adds read-only deployment hardening and
+systemd watchdog readiness/heartbeat notifications.
 
 ## Policy model (behavior track)
 

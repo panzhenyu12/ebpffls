@@ -88,6 +88,9 @@ sudo ./bin/ebpffls monitor --config configs/ransomware.yaml --debug-events
 ## systemd
 
 A hardened unit template is available at `deploy/systemd/ebpffls.service`.
+It uses systemd notify readiness and `WatchdogSec=30s`; the agent sends
+`READY=1` after the eBPF sensor is attached and then emits watchdog heartbeats
+when `NOTIFY_SOCKET` and `WATCHDOG_USEC` are provided by systemd.
 Typical deployment:
 
 ```bash
