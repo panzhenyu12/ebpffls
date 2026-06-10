@@ -21,6 +21,7 @@ const (
 	EventMmap
 	EventIOUring
 	EventConnect
+	EventLink
 )
 
 const (
@@ -113,6 +114,8 @@ func (e Event) TypeName() string {
 		return "io_uring"
 	case EventConnect:
 		return "connect"
+	case EventLink:
+		return "link"
 	default:
 		return fmt.Sprintf("unknown(%d)", e.Type)
 	}

@@ -19,19 +19,24 @@ Four complementary defense tracks:
 
 Components:
 
-- **eBPF sensor** — tracepoints, optional BPF LSM hooks, kprobes on sensitive syscalls
-- **Go agent** — ring buffer reader, sliding-window scoring, blacklist scanner, bounded process/fd state caches
+- **eBPF sensor** — CO-RE tracepoints, no-CO-RE legacy probes, optional BPF LSM hooks, and kprobes on sensitive syscalls
+- **Go agent** — ringbuf/perf/map-polling event readers, sliding-window scoring, blacklist scanner, bounded process/fd state caches
 - **Policy** — YAML configuration (`configs/ransomware.yaml`)
 
 For syscall-to-semantics mapping see [docs/ransomware-call-abstraction.md](docs/ransomware-call-abstraction.md).
+For the one-build multi-kernel compatibility plan see [docs/kernel-compatibility.md](docs/kernel-compatibility.md).
 
 ## Build
 
-Requirements on the target Linux host:
+Requirements on the build host:
 
 - Go 1.22+
 - clang/llvm
-- kernel BTF at `/sys/kernel/btf/vmlinux`
+
+Requirements on the target Linux host:
+
+- root privileges and eBPF support
+- kernel BTF at `/sys/kernel/btf/vmlinux` for the modern CO-RE runtime path; kernels without BTF fall back to legacy runtime paths
 - BPF LSM compiled for optional IOC hard-deny mode. Check active LSMs with:
 
 ```bash
@@ -42,6 +47,12 @@ If `bpf` is not listed, tracepoints, userspace scoring, hash blacklist, and
 kprobe-based enforcement can still work. `deny` uses `bpf_override_return`
 when the kernel enables `CONFIG_BPF_KPROBE_OVERRIDE` and allows syscall error
 injection; LSM IOC hard-deny still requires active BPF LSM.
+
+The build embeds three BPF runtime objects: modern `core`, `legacy_perf`, and
+`ultra_legacy_map`. Runtime mode is selected automatically so the same binary
+can run across supported kernel branches without rebuilding on the target host.
+Use `EBPFFLS_BPF_MODE=core|legacy_perf|ultra_legacy_map|auto` to force a path
+for debugging; the old `legacy` value is accepted as `legacy_perf`.
 
 ```bash
 make build
@@ -135,6 +146,7 @@ Within a sliding window, the agent scores:
 - getdents64 directory scans on protected or backup file descriptors
 - optional IPv4/IPv6 network egress after prior protected file activity
 - truncate, ftruncate, rename, and unlink activity
+- hardlink and symlink creation or replacement activity
 - suspicious extensions and ransom note filenames
 - backup/snapshot path destruction
 - high-rate bonus when open/write count ≥ 64
@@ -148,7 +160,7 @@ Enforcement then applies via kprobes, and via LSM as well when `bpf` is active.
 |--------|--------|
 | `log` | JSON alert only |
 | `deny` | kprobe `bpf_override_return(-EPERM)` rejects marked syscalls when supported; BPF LSM also returns `-EPERM` when active |
-| `kill` | kprobes send `SIGKILL` on sensitive syscalls; userspace also signals the process |
+| `kill` | userspace signals the process; modern kprobe/LSM paths add kernel-side kill when supported |
 
 ## Hash blacklist
 
@@ -194,6 +206,7 @@ destruction scoring under `backup_dirs`.
 |-----|-------------|
 | [docs/strategy.md](docs/strategy.md) | Architecture and response levels |
 | [docs/ransomware-call-abstraction.md](docs/ransomware-call-abstraction.md) | Ransomware syscall / semantic abstraction |
+| [docs/kernel-compatibility.md](docs/kernel-compatibility.md) | One-build kernel compatibility and CO-RE/legacy plan |
 | [docs/roadmap.md](docs/roadmap.md) | Development plan |
 | [docs/review-consolidated.md](docs/review-consolidated.md) | Code + doc review notes |
 
@@ -203,6 +216,7 @@ destruction scoring under `backup_dirs`.
 - fd-based `write`/`pwrite64`/`writev`/`ftruncate`/`mmap`/`getdents64` scoring depends on fd→path state from observed open/openat/openat2; close/dup and relative dirfd opens are tracked
 - BPF IOC maps sync from YAML, but path-scoped IOC hard-deny requires active BPF LSM
 - `deny` requires syscall error-injection support for kprobe override, or active BPF LSM for LSM hooks
+- `ultra_legacy_map` targets 4.1-4.3 kernels and uses map polling, so it prioritizes core coverage over event-channel throughput
 - io_uring support observes `io_uring_enter` only; it does not parse SQE contents
 - Network egress coverage is limited to optional IPv4/IPv6 `connect(2)` scoring after protected file activity; payload inspection and destination reputation are out of scope
 

@@ -11,10 +11,11 @@ bpftool:
 bpf/vmlinux.h: bpftool
 	bpftool btf dump file /sys/kernel/btf/vmlinux format c > $@
 
-generate: bpf/vmlinux.h
+generate:
+	@test -f bpf/vmlinux.h || (echo "bpf/vmlinux.h is required for core CO-RE generation; use a checked-in minimal header or run 'make bpf/vmlinux.h' on a BTF-capable build host" >&2; exit 1)
 	$(GO) generate ./...
 
-build: generate
+build:
 	$(GO) build -o bin/$(BINARY) ./cmd/ebpffls
 
 test: generate

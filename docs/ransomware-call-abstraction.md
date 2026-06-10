@@ -96,6 +96,8 @@ truncate(path, 0) 或 ftruncate(fd, 0)
 | `sys_enter_rename` | `EVENT_RENAME` | path, path2 | 后缀替换 |
 | `sys_enter_renameat` | `EVENT_RENAME` | path, path2 | 后缀替换 |
 | `sys_enter_renameat2` | `EVENT_RENAME` | path, path2, arg0=flags | 后缀替换 |
+| `sys_enter_link` / `sys_enter_linkat` | `EVENT_LINK` | path, path2 | 硬链接替换/逃避；source 或 target 命中保护域时评分 |
+| `sys_enter_symlink` / `sys_enter_symlinkat` | `EVENT_LINK` | path, path2, arg0=1 | 符号链接替换/逃避；source 或 target 命中保护域时评分 |
 | `sys_enter_unlink` | `EVENT_UNLINK` | path | 删除/清痕 |
 | `sys_enter_unlinkat` | `EVENT_UNLINK` | path | 删除/清痕 |
 | `sys_enter_truncate` | `EVENT_TRUNCATE` | path, size | 截断 |
@@ -125,7 +127,7 @@ truncate(path, 0) 或 ftruncate(fd, 0)
 | LSM `path_rename` / `inode_rename` | rename | `-EPERM` / SIGKILL（需 active BPF LSM） |
 | LSM `path_unlink` | unlink | `-EPERM` / SIGKILL（需 active BPF LSM） |
 | LSM `bprm_check_security` | execve | `-EPERM` / SIGKILL（需 active BPF LSM） |
-| kprobe syscall candidates | openat/openat2/rename/unlink/truncate/ftruncate/execve/write/pwrite64/writev/copy_file_range/getdents64/mmap/io_uring_enter | `SIGKILL` or `bpf_override_return(-EPERM)`；amd64/arm64 符号候选并 fallback `__se_sys_*` |
+| kprobe syscall candidates | openat/openat2/rename/link/symlink/unlink/truncate/ftruncate/execve/write/pwrite64/writev/copy_file_range/getdents64/mmap/io_uring_enter | `SIGKILL` or `bpf_override_return(-EPERM)`；amd64/arm64 符号候选并 fallback `__se_sys_*` |
 
 ### 4.4 扩展调用面状态
 
@@ -135,7 +137,7 @@ truncate(path, 0) 或 ftruncate(fd, 0)
 | `mmap` + 写 | `SO_ENCRYPT_WRITE` | 已覆盖：writable shared mmap fd→path 评分 |
 | `io_uring` 异步 I/O | 多种 | 已覆盖基础观测：`io_uring_enter` 在保护域活动后计分；不解析 SQE |
 | `connect` IPv4/IPv6 | 双重勒索外联 | 已覆盖：文件活动后非 allowlist 外联评分 |
-| `link` / `symlink` | 逃避/替换 | 当前路线图未纳入；可作为后续语义扩展 |
+| `link` / `symlink` | 逃避/替换 | 已覆盖：source/target 路径归一化评分，self-protect 与 backup 命中不被 trusted 豁免 |
 
 ---
 

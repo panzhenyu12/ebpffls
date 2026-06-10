@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"syscall"
@@ -32,11 +33,7 @@ func TestRingbufDropsReadsCounterMap(t *testing.T) {
 	}
 
 	s := &Sensor{
-		objects: ransomwareObjects{
-			ransomwareMaps: ransomwareMaps{
-				RingbufDrops: m,
-			},
-		},
+		maps: sensorMaps{RingbufDrops: m},
 	}
 	drops, err := s.RingbufDrops()
 	if err != nil {
@@ -44,6 +41,107 @@ func TestRingbufDropsReadsCounterMap(t *testing.T) {
 	}
 	if drops != 42 {
 		t.Fatalf("drops = %d, want 42", drops)
+	}
+}
+
+func TestLoadSensorObjectsWithModes(t *testing.T) {
+	coreObj := loadedSensorObjects{mode: runtimeModeCore}
+	legacyPerfObj := loadedSensorObjects{mode: runtimeModeLegacyPerf}
+	ultraLegacyObj := loadedSensorObjects{mode: runtimeModeUltraLegacyMap}
+	loaders := objectLoaders{
+		core: func() (loadedSensorObjects, error) {
+			return coreObj, nil
+		},
+		legacyPerf: func() (loadedSensorObjects, error) {
+			return legacyPerfObj, nil
+		},
+		ultraLegacyMap: func() (loadedSensorObjects, error) {
+			return ultraLegacyObj, nil
+		},
+	}
+
+	got, err := loadSensorObjectsWith("core", loaders)
+	if err != nil {
+		t.Fatalf("core mode: %v", err)
+	}
+	if got.mode != runtimeModeCore {
+		t.Fatalf("core mode selected %q", got.mode)
+	}
+
+	got, err = loadSensorObjectsWith("legacy_perf", loaders)
+	if err != nil {
+		t.Fatalf("legacy_perf mode: %v", err)
+	}
+	if got.mode != runtimeModeLegacyPerf {
+		t.Fatalf("legacy_perf mode selected %q", got.mode)
+	}
+
+	got, err = loadSensorObjectsWith("legacy", loaders)
+	if err != nil {
+		t.Fatalf("legacy alias mode: %v", err)
+	}
+	if got.mode != runtimeModeLegacyPerf {
+		t.Fatalf("legacy alias mode selected %q", got.mode)
+	}
+
+	got, err = loadSensorObjectsWith("ultra_legacy_map", loaders)
+	if err != nil {
+		t.Fatalf("ultra_legacy_map mode: %v", err)
+	}
+	if got.mode != runtimeModeUltraLegacyMap {
+		t.Fatalf("ultra_legacy_map mode selected %q", got.mode)
+	}
+}
+
+func TestLoadSensorObjectsWithAutoFallsBackToLegacyPerf(t *testing.T) {
+	loaders := objectLoaders{
+		core: func() (loadedSensorObjects, error) {
+			return loadedSensorObjects{}, fmt.Errorf("missing BTF")
+		},
+		legacyPerf: func() (loadedSensorObjects, error) {
+			return loadedSensorObjects{mode: runtimeModeLegacyPerf}, nil
+		},
+		ultraLegacyMap: func() (loadedSensorObjects, error) {
+			t.Fatal("ultra legacy should not be called when legacy_perf succeeds")
+			return loadedSensorObjects{}, nil
+		},
+	}
+
+	got, err := loadSensorObjectsWith("auto", loaders)
+	if err != nil {
+		t.Fatalf("auto fallback: %v", err)
+	}
+	if got.mode != runtimeModeLegacyPerf {
+		t.Fatalf("auto mode selected %q, want legacy_perf", got.mode)
+	}
+}
+
+func TestLoadSensorObjectsWithAutoFallsBackToUltraLegacyMap(t *testing.T) {
+	loaders := objectLoaders{
+		core: func() (loadedSensorObjects, error) {
+			return loadedSensorObjects{}, fmt.Errorf("missing BTF")
+		},
+		legacyPerf: func() (loadedSensorObjects, error) {
+			return loadedSensorObjects{}, fmt.Errorf("perf unavailable")
+		},
+		ultraLegacyMap: func() (loadedSensorObjects, error) {
+			return loadedSensorObjects{mode: runtimeModeUltraLegacyMap}, nil
+		},
+	}
+
+	got, err := loadSensorObjectsWith("auto", loaders)
+	if err != nil {
+		t.Fatalf("auto ultra fallback: %v", err)
+	}
+	if got.mode != runtimeModeUltraLegacyMap {
+		t.Fatalf("auto mode selected %q, want ultra_legacy_map", got.mode)
+	}
+}
+
+func TestLoadSensorObjectsWithInvalidMode(t *testing.T) {
+	_, err := loadSensorObjectsWith("definitely-not-real", objectLoaders{})
+	if err == nil {
+		t.Fatal("expected invalid mode error")
 	}
 }
 
@@ -125,6 +223,36 @@ func TestBPFLSMActiveFromData(t *testing.T) {
 	}
 	if bpfLSMActiveFromData("lockdown,capability,apparmor\n") {
 		t.Fatal("unexpected active bpf LSM")
+	}
+}
+
+func TestDecodeUltraLegacyEventSlot(t *testing.T) {
+	rawEvent := make([]byte, eventSize)
+	binary.LittleEndian.PutUint32(rawEvent[8+4+4+4+4:], EventLink)
+	copy(rawEvent[8+4+4+4+4+4+4+4+4+8+taskCommLen:], []byte("/src"))
+	copy(rawEvent[8+4+4+4+4+4+4+4+4+8+taskCommLen+pathMaxLen:], []byte("/dst"))
+
+	rawSlot := make([]byte, 8+eventSize)
+	binary.LittleEndian.PutUint64(rawSlot[:8], 1)
+	copy(rawSlot[8:], rawEvent)
+
+	raw := ultraLegacySlotEvent(rawSlot)
+	ev, err := DecodeEvent(raw)
+	if err != nil {
+		t.Fatalf("DecodeEvent: %v", err)
+	}
+	if ev.Type != EventLink || ev.Path != "/src" || ev.Path2 != "/dst" {
+		t.Fatalf("decoded event = %#v", ev)
+	}
+}
+
+func TestMapPollingEventReaderClose(t *testing.T) {
+	r := newMapPollingEventReader(nil, nil)
+	if err := r.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := r.Read(); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("Read err = %v, want ErrClosedPipe", err)
 	}
 }
 

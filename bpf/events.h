@@ -18,6 +18,7 @@ enum event_type {
 	EVENT_MMAP = 11,
 	EVENT_IO_URING = 12,
 	EVENT_CONNECT = 13,
+	EVENT_LINK = 14,
 };
 
 enum block_reason {

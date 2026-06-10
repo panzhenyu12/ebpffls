@@ -24,6 +24,9 @@ than static signatures. ebpffls therefore uses **four complementary tracks**:
 
 See [ransomware-call-abstraction.md](./ransomware-call-abstraction.md) for how
 syscalls map to semantic ransomware operations.
+Kernel compatibility is tracked in [kernel-compatibility.md](./kernel-compatibility.md):
+the target architecture is one Go binary with embedded `core`, `legacy_perf`,
+and `ultra_legacy_map` BPF objects, selected at runtime.
 
 ## Call surface (MVP signals)
 
@@ -37,6 +40,7 @@ syscalls map to semantic ransomware operations.
 | `connect` | Network egress | tracepoint | optional IPv4/IPv6 egress score after prior protected file activity | userspace kill after mark |
 | `copy_file_range` | Copy into new file | tracepoint | protected/backup destination fd path when fd was observed | kprobe after mark |
 | `rename` / `renameat(2)` | Suffix replace | tracepoint | protected rename; protected suspicious suffix is immediate IOC | kprobe; optional LSM IOC |
+| `link` / `symlink` | Evasion/replace | tracepoint or legacy kprobe | protected/backup/self-protect source or target | kprobe after mark |
 | `unlinkat` | Delete | tracepoint | protected/backup | kprobe; optional LSM |
 | `truncate` / `ftruncate` | Truncate | tracepoint | protected/backup; ftruncate uses fd→path cache | kprobe; optional LSM |
 | `getdents64` | Directory scan | tracepoint | protected/backup directory fd path when fd was observed | kprobe after mark |
@@ -72,12 +76,10 @@ protected directories. `file_open` keeps only marked-TGID enforcement because
 full path-scoped IOC matching there exceeds verifier complexity on the reference
 kernel; open/write behavior remains covered by tracepoint scoring.
 
-On the current reference server, `CONFIG_BPF_LSM=y` is available but `bpf` is
-not listed in `/sys/kernel/security/lsm`, so path-based LSM IOC hard-deny is not
-active. The kernel does support `CONFIG_BPF_KPROBE_OVERRIDE` and syscall error
-injection, so marked-TGID `deny` uses kprobe `bpf_override_return(-EPERM)`.
-Enabling BPF LSM at boot is still required for path-scoped IOC hard-deny
-behavior before userspace scoring marks a process.
+BPF LSM hard-deny requires Linux 5.7+ plus active `bpf` in
+`/sys/kernel/security/lsm`. `bpf_override_return(-EPERM)` requires 4.16+,
+`CONFIG_BPF_KPROBE_OVERRIDE`, and syscall error injection support. Both are
+optional; userspace scoring and kill remain the baseline across legacy modes.
 
 ## Hash blacklist
 
@@ -133,7 +135,7 @@ Within a sliding window (`window`, default 10s), per-TGID score includes:
 - io_uring_enter activity after prior protected file activity
 - optional IPv4/IPv6 network egress after prior protected file activity
 - copy_file_range to protected or backup file descriptors
-- truncate/ftruncate, rename, unlink on protected or backup paths
+- truncate/ftruncate, rename, link/symlink, unlink on protected or backup paths
 - getdents64 directory scans on protected or backup file descriptors
 - self-protect path tampering, which is not bypassed by trusted process identity
 - suspicious extensions and ransom note filenames on create
@@ -189,7 +191,11 @@ Blocked lineage exec is enforced as kill outside dry-run and is also scored as
 ```
 Syscalls / VFS
      │
-     ├─► Tracepoints ──► ringbuf ──► Go agent ──► score / blacklist
+     ├─► CO-RE tracepoints ──► ringbuf ──► Go agent ──► score / blacklist
+     │
+     ├─► legacy tracepoints ──► perf buffer ──► Go agent
+     │
+     ├─► ultra legacy kprobes ──► map polling ──► Go agent
      │                                      │
      │                                      ▼
      │                               blocked_tgids map

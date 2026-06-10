@@ -633,6 +633,8 @@ func (a *Agent) featurePaths(ev sensor.Event) []string {
 		}
 	case sensor.EventRename:
 		return []string{ev.Path, ev.Path2}
+	case sensor.EventLink:
+		return []string{ev.Path, ev.Path2}
 	}
 	if path := pickPath(ev); path != "" {
 		return []string{path}
@@ -918,6 +920,20 @@ func (a *Agent) score(ev sensor.Event) (int, string) {
 			}
 			return a.policy.Scores.Rename, "rename in protected scope"
 		}
+	case sensor.EventLink:
+		op := "link"
+		if ev.Arg0 == 1 {
+			op = "symlink"
+		}
+		if a.inSelfProtectScope(ev.Path) || a.inSelfProtectScope(ev.Path2) {
+			return a.policy.Scores.SelfProtect, "self-protect " + op
+		}
+		if a.inBackupScope(ev.Path) || a.inBackupScope(ev.Path2) {
+			return a.policy.Scores.Rename + a.policy.Scores.BackupDestroy, op + " in backup scope"
+		}
+		if a.inProtectedScope(ev.Path) || a.inProtectedScope(ev.Path2) {
+			return a.policy.Scores.Rename, op + " in protected scope"
+		}
 	case sensor.EventUnlink:
 		if selfProtect {
 			return a.policy.Scores.SelfProtect, "self-protect deletion"
@@ -969,6 +985,8 @@ func (a *Agent) backupSensitiveEvent(ev sensor.Event) bool {
 		return a.inBackupScope(path)
 	case sensor.EventRename:
 		return a.inBackupScope(ev.Path) || a.inBackupScope(ev.Path2)
+	case sensor.EventLink:
+		return a.inBackupScope(ev.Path) || a.inBackupScope(ev.Path2)
 	case sensor.EventUnlink:
 		return a.inBackupScope(path)
 	default:
@@ -987,6 +1005,8 @@ func (a *Agent) selfProtectSensitiveEvent(ev sensor.Event) bool {
 		}
 		return a.inSelfProtectScope(path)
 	case sensor.EventRename:
+		return a.inSelfProtectScope(ev.Path) || a.inSelfProtectScope(ev.Path2)
+	case sensor.EventLink:
 		return a.inSelfProtectScope(ev.Path) || a.inSelfProtectScope(ev.Path2)
 	case sensor.EventUnlink:
 		return a.inSelfProtectScope(path)
@@ -1367,6 +1387,16 @@ func eventName(t uint32) string {
 		return "close"
 	case sensor.EventDup:
 		return "dup"
+	case sensor.EventScan:
+		return "scan"
+	case sensor.EventMmap:
+		return "mmap"
+	case sensor.EventIOUring:
+		return "io_uring"
+	case sensor.EventConnect:
+		return "connect"
+	case sensor.EventLink:
+		return "link"
 	default:
 		return fmt.Sprintf("unknown(%d)", t)
 	}

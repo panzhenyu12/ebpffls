@@ -474,6 +474,73 @@ func TestScoreSelfProtectWriteOpen(t *testing.T) {
 	}
 }
 
+func TestScoreLinkInProtectedScope(t *testing.T) {
+	a := &Agent{
+		policy: config.Policy{
+			ProtectedDirs: []string{"/protected"},
+			Scores:        config.Scores{Rename: 8},
+		},
+	}
+
+	score, reason := a.score(sensor.Event{
+		Type:  sensor.EventLink,
+		Path:  "/tmp/source.txt",
+		Path2: "/protected/linked.txt",
+	})
+
+	if score != 8 {
+		t.Fatalf("score = %d, want 8", score)
+	}
+	if reason != "link in protected scope" {
+		t.Fatalf("reason = %q", reason)
+	}
+}
+
+func TestScoreSymlinkInBackupScope(t *testing.T) {
+	a := &Agent{
+		policy: config.Policy{
+			BackupDirs: []string{"/backup"},
+			Scores:     config.Scores{Rename: 8, BackupDestroy: 20},
+		},
+	}
+
+	score, reason := a.score(sensor.Event{
+		Type:  sensor.EventLink,
+		Arg0:  1,
+		Path:  "/tmp/source.txt",
+		Path2: "/backup/linked.txt",
+	})
+
+	if score != 28 {
+		t.Fatalf("score = %d, want 28", score)
+	}
+	if reason != "symlink in backup scope" {
+		t.Fatalf("reason = %q", reason)
+	}
+}
+
+func TestScoreSelfProtectLink(t *testing.T) {
+	a := &Agent{
+		policy: config.Policy{
+			SelfProtectPaths: []string{"/opt/ebpffls"},
+			Scores:           config.Scores{SelfProtect: 50},
+		},
+	}
+
+	score, reason := a.score(sensor.Event{
+		Type:  sensor.EventLink,
+		Path:  "/tmp/source",
+		Path2: "/opt/ebpffls/bin/ebpffls.link",
+	})
+
+	if score != 50 {
+		t.Fatalf("score = %d, want 50", score)
+	}
+	if reason != "self-protect link" {
+		t.Fatalf("reason = %q", reason)
+	}
+}
+
 func TestScoreExecAfterBlockedLineage(t *testing.T) {
 	a := &Agent{
 		policy:  config.Policy{Scores: config.Scores{ExecAfterBlocked: 7}},
@@ -506,6 +573,27 @@ func TestSelfProtectSensitiveEventBypassesTrustedExemption(t *testing.T) {
 		Path: "/opt/ebpffls/bin/ebpffls",
 	}) {
 		t.Fatal("expected self-protect unlink to be sensitive")
+	}
+	if !a.selfProtectSensitiveEvent(sensor.Event{
+		Type:  sensor.EventLink,
+		Path2: "/opt/ebpffls/bin/ebpffls.link",
+	}) {
+		t.Fatal("expected self-protect link to be sensitive")
+	}
+}
+
+func TestBackupSensitiveEventIncludesLink(t *testing.T) {
+	a := &Agent{
+		policy: config.Policy{
+			BackupDirs: []string{"/backup"},
+		},
+	}
+
+	if !a.backupSensitiveEvent(sensor.Event{
+		Type:  sensor.EventLink,
+		Path2: "/backup/linked",
+	}) {
+		t.Fatal("expected backup link to be sensitive")
 	}
 }
 

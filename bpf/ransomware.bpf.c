@@ -357,6 +357,30 @@ int kp_override_renameat2(struct pt_regs *ctx)
 	return enforce_blocked_syscall(ctx);
 }
 
+SEC("kprobe/__x64_sys_link")
+int kp_override_link(struct pt_regs *ctx)
+{
+	return enforce_blocked_syscall(ctx);
+}
+
+SEC("kprobe/__x64_sys_linkat")
+int kp_override_linkat(struct pt_regs *ctx)
+{
+	return enforce_blocked_syscall(ctx);
+}
+
+SEC("kprobe/__x64_sys_symlink")
+int kp_override_symlink(struct pt_regs *ctx)
+{
+	return enforce_blocked_syscall(ctx);
+}
+
+SEC("kprobe/__x64_sys_symlinkat")
+int kp_override_symlinkat(struct pt_regs *ctx)
+{
+	return enforce_blocked_syscall(ctx);
+}
+
 SEC("kprobe/__x64_sys_unlink")
 int kp_override_unlink(struct pt_regs *ctx)
 {
@@ -984,6 +1008,69 @@ int trace_renameat2(struct trace_event_raw_sys_enter *ctx)
 	e->arg0 = (int)ctx->args[4];
 	bpf_probe_read_user_str(e->path, sizeof(e->path), oldname);
 	bpf_probe_read_user_str(e->path2, sizeof(e->path2), newname);
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_link")
+int trace_link(struct trace_event_raw_sys_enter *ctx)
+{
+	struct event *e = new_event(EVENT_LINK);
+	if (!e)
+		return 0;
+
+	const char *oldname = (const char *)ctx->args[0];
+	const char *newname = (const char *)ctx->args[1];
+	bpf_probe_read_user_str(e->path, sizeof(e->path), oldname);
+	bpf_probe_read_user_str(e->path2, sizeof(e->path2), newname);
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_linkat")
+int trace_linkat(struct trace_event_raw_sys_enter *ctx)
+{
+	struct event *e = new_event(EVENT_LINK);
+	if (!e)
+		return 0;
+
+	const char *oldname = (const char *)ctx->args[1];
+	const char *newname = (const char *)ctx->args[3];
+	e->arg0 = (int)ctx->args[4];
+	bpf_probe_read_user_str(e->path, sizeof(e->path), oldname);
+	bpf_probe_read_user_str(e->path2, sizeof(e->path2), newname);
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_symlink")
+int trace_symlink(struct trace_event_raw_sys_enter *ctx)
+{
+	struct event *e = new_event(EVENT_LINK);
+	if (!e)
+		return 0;
+
+	const char *target = (const char *)ctx->args[0];
+	const char *linkpath = (const char *)ctx->args[1];
+	e->arg0 = 1;
+	bpf_probe_read_user_str(e->path, sizeof(e->path), target);
+	bpf_probe_read_user_str(e->path2, sizeof(e->path2), linkpath);
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_symlinkat")
+int trace_symlinkat(struct trace_event_raw_sys_enter *ctx)
+{
+	struct event *e = new_event(EVENT_LINK);
+	if (!e)
+		return 0;
+
+	const char *target = (const char *)ctx->args[0];
+	const char *linkpath = (const char *)ctx->args[2];
+	e->arg0 = 1;
+	bpf_probe_read_user_str(e->path, sizeof(e->path), target);
+	bpf_probe_read_user_str(e->path2, sizeof(e->path2), linkpath);
 	bpf_ringbuf_submit(e, 0);
 	return 0;
 }

@@ -108,12 +108,21 @@ start_agent() {
   local policy="$1"
   local logfile="$2"
   local mode="${3:-enforce}"
+  local bpf_mode="${4:-}"
 
   stop_agent
   if [[ "${mode}" == "dry-run" ]]; then
-    "${BIN}" monitor --config "${policy}" >"${logfile}" 2>&1 &
+    if [[ -n "${bpf_mode}" ]]; then
+      EBPFFLS_BPF_MODE="${bpf_mode}" "${BIN}" monitor --config "${policy}" >"${logfile}" 2>&1 &
+    else
+      "${BIN}" monitor --config "${policy}" >"${logfile}" 2>&1 &
+    fi
   else
-    "${BIN}" monitor --config "${policy}" --dry-run=false >"${logfile}" 2>&1 &
+    if [[ -n "${bpf_mode}" ]]; then
+      EBPFFLS_BPF_MODE="${bpf_mode}" "${BIN}" monitor --config "${policy}" --dry-run=false >"${logfile}" 2>&1 &
+    else
+      "${BIN}" monitor --config "${policy}" --dry-run=false >"${logfile}" 2>&1 &
+    fi
   fi
   AGENT_PID="$!"
   sleep 1
@@ -1304,6 +1313,101 @@ PY
   stop_agent
 }
 
+test_link_and_symlink_kill() {
+  log "hardlink and symlink events score and kill"
+  local dir="${TMP_DIR}/link-symlink"
+  local bl="${TMP_DIR}/link-symlink-blacklist.txt"
+  local policy="${TMP_DIR}/link-symlink.yaml"
+  local agent_log="${TMP_DIR}/link-symlink-agent.log"
+  local link_sim="${TMP_DIR}/link.py"
+  local symlink_sim="${TMP_DIR}/symlink.py"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" link-symlink-test 8 kill "${dir}" "${bl}"
+
+  start_agent "${policy}" "${agent_log}"
+  cat >"${link_sim}" <<PY
+import os, time
+src = "${TMP_DIR}/hardlink-source.txt"
+dst = "${dir}/hardlink-target.txt"
+with open(src, "w") as f:
+    f.write("data")
+os.link(src, dst)
+time.sleep(5)
+print("survived")
+PY
+  expect_killed "hardlink scoring" python3 "${link_sim}"
+  wait_for_log "${agent_log}" 'link in protected scope' "hardlink scoring"
+  stop_agent
+
+  start_agent "${policy}" "${agent_log}"
+  cat >"${symlink_sim}" <<PY
+import os, time
+src = "${TMP_DIR}/symlink-source.txt"
+dst = "${dir}/symlink-target.txt"
+with open(src, "w") as f:
+    f.write("data")
+os.symlink(src, dst)
+time.sleep(5)
+print("survived")
+PY
+  expect_killed "symlink scoring" python3 "${symlink_sim}"
+  wait_for_log "${agent_log}" 'symlink in protected scope' "symlink scoring"
+  stop_agent
+}
+
+test_legacy_perf_mode_core_write_kills() {
+  log "legacy_perf BPF mode uses perf buffer and kills protected writes"
+  local dir="${TMP_DIR}/legacy-mode"
+  local bl="${TMP_DIR}/legacy-mode-blacklist.txt"
+  local policy="${TMP_DIR}/legacy-mode.yaml"
+  local agent_log="${TMP_DIR}/legacy-mode-agent.log"
+  local sim="${TMP_DIR}/legacy-mode.py"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" legacy-mode-test 2 kill "${dir}" "${bl}"
+  start_agent "${policy}" "${agent_log}" enforce legacy_perf
+  cat >"${sim}" <<PY
+import time
+base = "${dir}"
+for i in range(100):
+    with open(f"{base}/legacy-{i}.txt", "w") as f:
+        f.write("data")
+    time.sleep(0.02)
+print("survived")
+PY
+  expect_killed "legacy_perf mode protected write" python3 "${sim}"
+  wait_for_log "${agent_log}" 'bpf_runtime mode=legacy_perf' "legacy_perf mode startup"
+  wait_for_log "${agent_log}" 'write-open in protected scope' "legacy_perf mode scoring"
+  stop_agent
+}
+
+test_ultra_legacy_map_mode_core_write_kills() {
+  log "ultra_legacy_map BPF mode uses map polling and kills protected writes"
+  local dir="${TMP_DIR}/ultra-legacy-mode"
+  local bl="${TMP_DIR}/ultra-legacy-mode-blacklist.txt"
+  local policy="${TMP_DIR}/ultra-legacy-mode.yaml"
+  local agent_log="${TMP_DIR}/ultra-legacy-mode-agent.log"
+  local sim="${TMP_DIR}/ultra-legacy-mode.py"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" ultra-legacy-mode-test 2 kill "${dir}" "${bl}"
+  start_agent "${policy}" "${agent_log}" enforce ultra_legacy_map
+  cat >"${sim}" <<PY
+import time
+base = "${dir}"
+for i in range(100):
+    with open(f"{base}/ultra-{i}.txt", "w") as f:
+        f.write("data")
+    time.sleep(0.02)
+print("survived")
+PY
+  expect_killed "ultra_legacy_map protected write" python3 "${sim}"
+  wait_for_log "${agent_log}" 'bpf_runtime mode=ultra_legacy_map' "ultra_legacy_map startup"
+  wait_for_log "${agent_log}" 'write-open in protected scope' "ultra_legacy_map scoring"
+  stop_agent
+}
+
 test_hash_blacklist_exec_kills() {
   log "hash blacklist kills blacklisted exec"
   local dir="${TMP_DIR}/hash-exec"
@@ -1638,6 +1742,67 @@ PY
   stop_agent
 }
 
+test_self_protect_link_kills_even_when_trusted() {
+  log "self-protect link tamper kills even trusted process"
+  local dir="${TMP_DIR}/self-protect-link"
+  local bl="${TMP_DIR}/self-protect-link-blacklist.txt"
+  local policy="${TMP_DIR}/self-protect-link.yaml"
+  local agent_log="${TMP_DIR}/self-protect-link-agent.log"
+  local sim="${TMP_DIR}/self-protect-link.py"
+  local protected_dir="${dir}/self"
+  local protected_bin="${protected_dir}/ebpffls"
+  mkdir -p "${dir}/self"
+  printf 'agent\n' >"${protected_bin}"
+  : >"${bl}"
+  cat >"${policy}" <<YAML
+name: self-protect-link-test
+window: 10s
+threshold: 10
+action: kill
+block_ttl: 1m
+protected_dirs:
+  - ${dir}/data
+backup_dirs: []
+self_protect_paths:
+  - ${protected_dir}
+trusted_processes:
+  - ebpffls
+  - python3
+trusted_exe_paths:
+  - /usr/bin
+  - /usr/local/bin
+trusted_uids:
+  - 0
+blacklist_scan: 30s
+blacklist_hashes: []
+blacklist_hash_files:
+  - ${bl}
+scores:
+  write: 1
+  truncate: 6
+  rename: 8
+  unlink: 8
+  self_protect: 50
+  suspicious_extension: 10
+  ransom_note: 20
+  backup_destroy: 20
+  high_rate_bonus: 15
+  exec_after_blocked: 10
+  scan: 1
+  mmap: 3
+  io_uring: 1
+YAML
+  start_agent "${policy}" "${agent_log}"
+  cat >"${sim}" <<PY
+import os, time
+os.symlink("${TMP_DIR}/self-protect-link-source", "${protected_dir}/ebpffls.link")
+time.sleep(5)
+PY
+  expect_killed "self-protect link tamper" python3 "${sim}"
+  wait_for_log "${agent_log}" 'self-protect symlink' "self-protect link"
+  stop_agent
+}
+
 main() {
   command -v cc >/dev/null || fail "cc is required for integration tests"
   [[ -x "${BIN}" ]] || fail "missing binary ${BIN}; run make build first"
@@ -1667,6 +1832,9 @@ main() {
   test_immediate_rename_ioc_kills
   test_ransom_note_kills
   test_unlink_and_truncate_kill
+  test_link_and_symlink_kill
+  test_legacy_perf_mode_core_write_kills
+  test_ultra_legacy_map_mode_core_write_kills
   test_hash_blacklist_exec_kills
   test_hash_blacklist_hot_scan_kills
   test_blocked_lineage_exec_kills_child
@@ -1675,6 +1843,7 @@ main() {
   test_make_workload_false_positive_survives
   test_trusted_tar_extract_false_positive_survives
   test_self_protect_path_kills_even_when_trusted
+  test_self_protect_link_kills_even_when_trusted
   log "all integration tests passed"
 }
 
