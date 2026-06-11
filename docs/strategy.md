@@ -27,6 +27,9 @@ syscalls map to semantic ransomware operations.
 Kernel compatibility is tracked in [kernel-compatibility.md](./kernel-compatibility.md):
 the target architecture is one Go binary with embedded `core`, `legacy_perf`,
 and `ultra_legacy_map` BPF objects, selected at runtime.
+`core` is the CO-RE path and still needs target-kernel BTF; machines without
+BTF fall back to the embedded no-CO-RE objects instead of compiling BPF on the
+target host.
 
 ## Call surface (MVP signals)
 

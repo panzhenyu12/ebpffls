@@ -10,7 +10,6 @@
 
 #define BPF_MAP_TYPE_HASH 1
 #define BPF_MAP_TYPE_ARRAY 2
-#define BPF_MAP_TYPE_PERCPU_ARRAY 6
 #define BPF_ANY 0
 #define O_ACCMODE 00000003
 #define O_WRONLY 00000001
@@ -80,7 +79,7 @@ struct bpf_map_def SEC("maps") event_cursor = {
 };
 
 struct bpf_map_def SEC("maps") scratch_events = {
-	.type = BPF_MAP_TYPE_PERCPU_ARRAY,
+	.type = BPF_MAP_TYPE_ARRAY,
 	.key_size = sizeof(__u32),
 	.value_size = sizeof(struct event),
 	.max_entries = 1,
@@ -186,20 +185,25 @@ static __always_inline long retval(struct pt_regs *ctx)
 	return ctx->ax;
 }
 
+static __always_inline int read_user_path(char *dst, __u32 size, const void *src)
+{
+	if (!src)
+		return -1;
+	return bpf_probe_read(dst, size, src);
+}
+
 static __always_inline int read_str_arg1(struct pt_regs *ctx, char *dst, __u32 size)
 {
-	int n = bpf_probe_read_str(dst, size, (const void *)direct_parm1(ctx));
-	if (n > 1)
-		return n;
-	return bpf_probe_read_str(dst, size, (const void *)wrapped_parm1(ctx));
+	if (read_user_path(dst, size, (const void *)direct_parm1(ctx)) == 0)
+		return 0;
+	return read_user_path(dst, size, (const void *)wrapped_parm1(ctx));
 }
 
 static __always_inline int read_str_arg2(struct pt_regs *ctx, char *dst, __u32 size)
 {
-	int n = bpf_probe_read_str(dst, size, (const void *)direct_parm2(ctx));
-	if (n > 1)
-		return n;
-	return bpf_probe_read_str(dst, size, (const void *)wrapped_parm2(ctx));
+	if (read_user_path(dst, size, (const void *)direct_parm2(ctx)) == 0)
+		return 0;
+	return read_user_path(dst, size, (const void *)wrapped_parm2(ctx));
 }
 
 static __always_inline int direct_first_arg_is_small(struct pt_regs *ctx)
@@ -286,7 +290,7 @@ static __always_inline int remember_open(struct pt_regs *ctx, __s32 dirfd, const
 
 	pending.dirfd = dirfd;
 	pending.flags = flags;
-	bpf_probe_read_str(pending.path, sizeof(pending.path), pathname);
+	read_user_path(pending.path, sizeof(pending.path), pathname);
 	bpf_map_update_elem(&pending_opens, &pid_tgid, &pending, BPF_ANY);
 	return 0;
 }
@@ -298,10 +302,10 @@ int kp_override_open(struct pt_regs *ctx)
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 
 	pending.dirfd = AT_FDCWD;
-	if (bpf_probe_read_str(pending.path, sizeof(pending.path), (const void *)direct_parm1(ctx)) > 1) {
+	if (read_user_path(pending.path, sizeof(pending.path), (const void *)direct_parm1(ctx)) == 0) {
 		pending.flags = (__s32)direct_parm2(ctx);
 	} else {
-		bpf_probe_read_str(pending.path, sizeof(pending.path), (const void *)wrapped_parm1(ctx));
+		read_user_path(pending.path, sizeof(pending.path), (const void *)wrapped_parm1(ctx));
 		pending.flags = (__s32)wrapped_parm2(ctx);
 	}
 	bpf_map_update_elem(&pending_opens, &pid_tgid, &pending, BPF_ANY);
@@ -424,10 +428,10 @@ int kp_override_truncate(struct pt_regs *ctx)
 	struct event *e = new_event(EVENT_TRUNCATE);
 	if (!e)
 		return 0;
-	if (bpf_probe_read_str(e->path, sizeof(e->path), (const void *)direct_parm1(ctx)) > 1) {
+	if (read_user_path(e->path, sizeof(e->path), (const void *)direct_parm1(ctx)) == 0) {
 		e->size = (__u64)direct_parm2(ctx);
 	} else {
-		bpf_probe_read_str(e->path, sizeof(e->path), (const void *)wrapped_parm1(ctx));
+		read_user_path(e->path, sizeof(e->path), (const void *)wrapped_parm1(ctx));
 		e->size = (__u64)wrapped_parm2(ctx);
 	}
 	return emit_event(e);

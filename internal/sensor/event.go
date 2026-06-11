@@ -1,9 +1,9 @@
 package sensor
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -122,7 +122,7 @@ func (e Event) TypeName() string {
 }
 
 func cString(buf []byte) string {
-	if i := strings.IndexByte(string(buf), 0); i >= 0 {
+	if i := bytes.IndexByte(buf, 0); i >= 0 {
 		return string(buf[:i])
 	}
 	return string(buf)

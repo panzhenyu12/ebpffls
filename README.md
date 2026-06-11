@@ -36,7 +36,7 @@ Requirements on the build host:
 Requirements on the target Linux host:
 
 - root privileges and eBPF support
-- kernel BTF at `/sys/kernel/btf/vmlinux` for the modern CO-RE runtime path; kernels without BTF fall back to legacy runtime paths
+- kernel BTF at `/sys/kernel/btf/vmlinux`, or `EBPFFLS_BTF` pointing at a matching BTF file, for the modern CO-RE runtime path; kernels without target BTF fall back to embedded no-CO-RE legacy runtime paths
 - BPF LSM compiled for optional IOC hard-deny mode. Check active LSMs with:
 
 ```bash
@@ -53,6 +53,9 @@ The build embeds three BPF runtime objects: modern `core`, `legacy_perf`, and
 can run across supported kernel branches without rebuilding on the target host.
 Use `EBPFFLS_BPF_MODE=core|legacy_perf|ultra_legacy_map|auto` to force a path
 for debugging; the old `legacy` value is accepted as `legacy_perf`.
+`core` still needs target-kernel BTF for CO-RE relocation. Without BTF, the
+loader uses the already embedded no-CO-RE objects; it does not compile BPF on
+the target host.
 
 ```bash
 make build
@@ -216,7 +219,7 @@ destruction scoring under `backup_dirs`.
 - fd-based `write`/`pwrite64`/`writev`/`ftruncate`/`mmap`/`getdents64` scoring depends on fd→path state from observed open/openat/openat2; close/dup and relative dirfd opens are tracked
 - BPF IOC maps sync from YAML, but path-scoped IOC hard-deny requires active BPF LSM
 - `deny` requires syscall error-injection support for kprobe override, or active BPF LSM for LSM hooks
-- `ultra_legacy_map` targets 4.1-4.3 kernels and uses map polling, so it prioritizes core coverage over event-channel throughput
+- `ultra_legacy_map` targets the 4.1+ kprobe baseline and uses map polling, so it prioritizes core coverage over event-channel throughput; real coverage still depends on the target kernel's BPF syscall, kprobe/ftrace support, and exported syscall symbols
 - io_uring support observes `io_uring_enter` only; it does not parse SQE contents
 - Network egress coverage is limited to optional IPv4/IPv6 `connect(2)` scoring after protected file activity; payload inspection and destination reputation are out of scope
 

@@ -6,9 +6,9 @@
 
 | Runtime mode | 目标内核 | BPF object | 事件通道 | 观测方式 | 主要降级 |
 |--------------|----------|------------|----------|----------|----------|
-| `core` | 5.8+ 优先；有可用 kernel BTF 的现代内核 | `ransomware` | ringbuf | CO-RE tracepoint + optional BPF LSM + kprobe override | BPF LSM、部分 syscall kprobe 仍按 attach 结果 optional |
-| `legacy_perf` | 4.4+ | `ransomwareLegacy` | perf event array | no-CO-RE tracepoint；部分 syscall optional | 无 BPF LSM、无 ringbuf、无内核态 kill |
-| `ultra_legacy_map` | 4.1-4.3 | `ransomwareUltraLegacy` | BPF array map polling | no-CO-RE kprobe-only 核心事件 | 无 perf/ringbuf、无 tracepoint、无 override deny、无 BPF LSM |
+| `core` | 5.8+ 优先；必须有目标内核 BTF | `ransomware` | ringbuf | CO-RE tracepoint + optional BPF LSM + kprobe override | BPF LSM、部分 syscall kprobe 仍按 attach 结果 optional |
+| `legacy_perf` | 4.7+ tracepoint 路径；对象用 v1 ISA 编译 | `ransomwareLegacy` | perf event array | no-CO-RE tracepoint；部分 syscall optional | 无 BPF LSM、无 ringbuf、无内核态 kill；依赖 tracepoint 和 `bpf_probe_read_str` |
+| `ultra_legacy_map` | 4.1+ 目标；对象用 v1 ISA 编译 | `ransomwareUltraLegacy` | BPF array map polling | no-CO-RE kprobe-only 核心事件 | 无 perf/ringbuf、无 tracepoint、无 override deny、无 BPF LSM；依赖 syscall kprobe 符号 |
 
 `EBPFFLS_BPF_MODE` 支持：
 
@@ -25,13 +25,14 @@
 | 能力 | 上游版本 | 约束 | ebpffls 策略 |
 |------|----------|------|--------------|
 | `BPF_PROG_TYPE_KPROBE` | 4.1 | 依赖 kprobe/ftrace 和 syscall 符号可见性 | 4.1+ 基线，ultra legacy 用它采集核心事件 |
-| `BPF_MAP_TYPE_HASH` / `ARRAY` / `PERCPU_ARRAY` | 早于 4.1 | 仍受 verifier 和 memlock 约束 | ultra legacy 的事件槽、scratch buffer、策略 map 基线 |
+| `BPF_MAP_TYPE_HASH` / `ARRAY` | 早于 4.1 | 仍受 verifier 和 memlock 约束 | ultra legacy 的事件槽、scratch buffer、策略 map 基线 |
 | `BPF_MAP_TYPE_PERF_EVENT_ARRAY` | 4.3 | 还需要 perf event 用户态 reader | `legacy_perf` 的 map 基础；真正输出依赖下一项 |
 | `bpf_perf_event_output` | 4.4 | 只能向当前 CPU 对应 perf event 输出 | `legacy_perf` 事件通道基线 |
 | `BPF_PROG_TYPE_TRACEPOINT` | 4.7 | tracepoint 名称必须在目标内核存在 | `core` / `legacy_perf` 优先使用；4.1-4.6 不依赖 |
-| `bpf_probe_read_str` | 4.11 | 旧 helper；5.5 后拆分 user/kernel helper | legacy object 使用旧 helper；ultra legacy 只在 4.1-4.3 能力范围内做核心路径 |
+| `bpf_probe_read_str` | 4.11 | 旧 helper；5.5 后拆分 user/kernel helper | `legacy_perf` 使用旧 helper；`ultra_legacy_map` 禁止使用 |
 | `bpf_override_return` | 4.16 | 需 `CONFIG_BPF_KPROBE_OVERRIDE` 且目标函数允许 error injection | `core` / `legacy_perf` optional deny；失败回退用户态 kill |
 | `bpf_get_current_cgroup_id` | 4.18 | program type 可用性受内核影响 | legacy 不依赖；Go agent 保留 `/proc/<pid>/cgroup` 过滤 |
+| BPF v2 ISA | 4.14 | clang 默认/新版优化可能生成旧 verifier 不认识的指令 | legacy/ultra legacy 显式 `-mcpu=v1` |
 | bounded loops | 5.3 | 5.3 前 verifier 不接受普通 bounded loop | legacy/ultra legacy 禁止运行时 bounded loop |
 | `bpf_send_signal` | 5.3 | helper 可能返回忙或权限错误 | 只作为现代增强；4.x 基线是 Go agent `SIGKILL` |
 | `bpf_probe_read_user*` | 5.5 | user/kernel read helper 拆分后的新 helper | core 可用；legacy/ultra legacy 禁止依赖 |
@@ -41,8 +42,7 @@
 
 结论：
 
-- **4.1-4.3**：可以承诺核心勒索 syscall 可观测、可评分、可用户态 kill；不承诺 perf/ringbuf 高吞吐、BPF LSM hard-deny、`bpf_override_return` 或内核态 kill。
-- **4.4-4.6**：可以使用 perf event 输出，但不依赖 tracepoint；实际覆盖以 kprobe/tracepoint attach 结果为准。
+- **4.1-4.6**：只能走 `ultra_legacy_map` 的 kprobe + map polling；可以覆盖核心勒索 syscall 的观测、评分和用户态 kill，但不承诺 perf/ringbuf、tracepoint、BPF LSM hard-deny、`bpf_override_return` 或内核态 kill。
 - **4.7+**：tracepoint object 成为主要 legacy 观测路径。
 - **5.7+**：BPF LSM 才可能启用，但仍必须 active LSM 包含 `bpf`。
 - **5.8+**：优先使用 CO-RE/ringbuf 现代路径。
@@ -59,22 +59,41 @@ ebpffls 的落地取舍：
 - 学 Tracee：缺 BTF/kconfig/LSM 不让 `auto` 失败，只影响能力选择。
 - 为满足 4.1+，额外维护 `ultra_legacy_map`，只覆盖防勒索核心 syscall。
 
-## CO-RE 与一次编译
+## CO-RE、BTF 与一次编译
 
-`make build` 只构建 Go binary，不读取目标机 `/sys/kernel/btf/vmlinux`。BPF object 由构建机通过 `make generate` 生成，并由 bpf2go embed 到 Go package 中。
+`make build` 只构建 Go binary，不读取目标机 `/sys/kernel/btf/vmlinux`。BPF object 由构建机通过 `make generate` 生成，并由 bpf2go embed 到 Go package 中。目标机器运行时不会调用 clang，也不会重新编译 BPF。
 
 发布要求：
 
 - 生成的 `internal/sensor/*_bpf*.go` 和 `.o` 必须进入发布产物或被显式 `git add -f`。
 - `bpf/vmlinux.h` 是构建输入，不是目标机运行依赖。
-- 目标机运行时如果 core CO-RE 因 BTF/ringbuf/verifier 失败，`auto` 必须记录原因并 fallback。
+- `core` object 虽然已经预编译，但 CO-RE relocation 仍需要目标内核 BTF。没有 BTF 时，`core` 不能可靠运行。
+- 目标机运行时如果 `core` 因 BTF、ringbuf、verifier 或 LSM/tracepoint 能力失败，`auto` 必须记录原因并 fallback。
+
+没有 `/sys/kernel/btf/vmlinux` 时的实现不是“在目标机重编译”，而是：
+
+1. Go loader 先尝试 `core`。
+2. 如果目标机器缺 BTF，或用户没有通过 `EBPFFLS_BTF` 提供匹配 BTF，`core` load 失败。
+3. loader 自动切到已 embed 的 no-CO-RE object：优先 `legacy_perf`，再到 `ultra_legacy_map`。
+4. no-CO-RE object 不做 CO-RE relocation，不依赖目标 BTF；兼容性由预编译时选择的 helper、map type、program type、BPF ISA 和运行时 attach 探测决定。
 
 BTF discovery 顺序：
 
 1. `EBPFFLS_BTF`
 2. `/sys/kernel/btf/vmlinux`
-3. 随包 metadata/BTFHub 目录
+3. 随包 metadata/BTFHub 目录（计划项）
 4. fallback 到 `legacy_perf` 或 `ultra_legacy_map`
+
+`EBPFFLS_BTF` 用于显式指定目标内核 BTF 文件，例如来自 BTFHub 或发行版 debug 包的匹配 BTF。它不是 C 头文件，也不是 `vmlinux.h`。`vmlinux.h` 只参与构建期 clang 编译；运行期 CO-RE 使用的是 BTF binary metadata。
+
+## 当前实现状态
+
+- 已实现：一个 Go binary embed 三个 BPF object，`auto` 按 `core -> legacy_perf -> ultra_legacy_map` fallback。
+- 已实现：`legacy_perf` / `ultra_legacy_map` 使用 no-CO-RE C 类型，不包含 CO-RE relocation。
+- 已实现：legacy/ultra legacy 生成使用 `-mcpu=v1`，避免 clang 生成 4.14+/5.1+ 才支持的 BPF v2/v3 ISA 指令。
+- 已实现：`ultra_legacy_map` 不使用 ringbuf、perf event array、tracepoint、BPF LSM、`bpf_override_return`、`bpf_send_signal`、`BPF_MAP_TYPE_PERCPU_ARRAY` 或 `bpf_probe_read_str`。
+- 未完成：随包 BTFHub/metadata 自动发现。当前只支持 `EBPFFLS_BTF` 和 cilium/ebpf 默认的 `/sys/kernel/btf/vmlinux`。
+- 未完成：4.1/4.4/4.7 实机矩阵。参考服务器只能证明 forced legacy modes 在该服务器内核上可运行，不能替代低内核验收。
 
 ## 能力覆盖
 
@@ -99,6 +118,8 @@ BTF discovery 顺序：
 - 单元测试：mode selection、core fallback 到 `legacy_perf`、`legacy_perf` fallback 到 `ultra_legacy_map`。
 - 单元测试：ringbuf/perf/map polling reader 都能 decode 同一 `sensor.Event`。
 - 单元测试：BPF LSM 和 kprobe override attach 失败只计 skip，不 fatal。
+- 单元测试：legacy/ultra legacy bpf2go flags 必须包含 `-mcpu=v1`。
+- 静态检查：`ultra_legacy_map` BPF C 不得引用 `bpf_probe_read_str`、perf/ringbuf/LSM/override helpers。
 - 集成测试：强制 `EBPFFLS_BPF_MODE=legacy_perf` 跑 protected write、rename、link/symlink、truncate、blacklist kill。
 - 集成测试：强制 `EBPFFLS_BPF_MODE=ultra_legacy_map` 验证 map polling 事件触发评分和 kill。
 - 远程参考服务器：`PATH=/usr/local/go/bin:$PATH make integration-test`。

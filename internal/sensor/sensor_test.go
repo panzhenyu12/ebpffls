@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -142,6 +143,45 @@ func TestLoadSensorObjectsWithInvalidMode(t *testing.T) {
 	_, err := loadSensorObjectsWith("definitely-not-real", objectLoaders{})
 	if err == nil {
 		t.Fatal("expected invalid mode error")
+	}
+}
+
+func TestLegacyBPF2GoGenerateUsesV1ISA(t *testing.T) {
+	src, err := os.ReadFile("generate.go")
+	if err != nil {
+		t.Fatalf("read generate.go: %v", err)
+	}
+	text := string(src)
+	for _, ident := range []string{"ransomwareLegacy", "ransomwareUltraLegacy"} {
+		want := `-mcpu=v1 -I../../bpf" ` + ident
+		if !strings.Contains(text, want) {
+			t.Fatalf("generate.go missing %q", want)
+		}
+	}
+	if strings.Contains(text, `-mcpu=v1 -I../../bpf" ransomware ../../bpf/ransomware.bpf.c`) {
+		t.Fatal("core CO-RE generate line should not force the v1 ISA")
+	}
+}
+
+func TestUltraLegacyBPFAvoidsPost41Dependencies(t *testing.T) {
+	src, err := os.ReadFile("../../bpf/ransomware_ultra_legacy.bpf.c")
+	if err != nil {
+		t.Fatalf("read ultra legacy BPF source: %v", err)
+	}
+	text := string(src)
+	for _, token := range []string{
+		"bpf_probe_read_str",
+		"BPF_MAP_TYPE_PERCPU_ARRAY",
+		"BPF_MAP_TYPE_PERF_EVENT_ARRAY",
+		"bpf_perf_event_output",
+		"bpf_override_return",
+		"bpf_send_signal",
+		`SEC("tracepoint`,
+		`SEC("lsm`,
+	} {
+		if strings.Contains(text, token) {
+			t.Fatalf("ultra legacy BPF source contains %q", token)
+		}
 	}
 }
 
