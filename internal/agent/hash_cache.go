@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -15,13 +16,19 @@ type hashCacheEntry struct {
 	Size    int64
 	ModTime time.Time
 	Hash    string
+	Info    os.FileInfo
 }
+
+const maxHashCacheEntries = 4096
 
 func newHashCache() *hashCache {
 	return &hashCache{entries: make(map[string]hashCacheEntry)}
 }
 
 func (c *hashCache) get(path string) (string, bool) {
+	if c == nil {
+		return "", false
+	}
 	stat, err := os.Stat(path)
 	if err != nil {
 		return "", false
@@ -32,7 +39,8 @@ func (c *hashCache) get(path string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	if entry.Size != stat.Size() || !entry.ModTime.Equal(stat.ModTime()) {
+	if entry.Size != stat.Size() || !entry.ModTime.Equal(stat.ModTime()) ||
+		(entry.Info != nil && !os.SameFile(entry.Info, stat)) {
 		delete(c.entries, path)
 		return "", false
 	}
@@ -40,23 +48,43 @@ func (c *hashCache) get(path string) (string, bool) {
 }
 
 func (c *hashCache) compute(path string) (string, error) {
-	stat, err := os.Stat(path)
-	if err != nil {
-		return "", err
+	if c == nil {
+		return "", fmt.Errorf("hash cache is nil")
 	}
 	if hash, ok := c.get(path); ok {
 		return hash, nil
 	}
-	hash, err := fileSHA256(path)
-	if err != nil {
-		return "", err
+	for attempt := 0; attempt < 2; attempt++ {
+		before, err := os.Stat(path)
+		if err != nil {
+			return "", err
+		}
+		hash, err := fileSHA256(path)
+		if err != nil {
+			return "", err
+		}
+		after, err := os.Stat(path)
+		if err != nil {
+			return "", err
+		}
+		if before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) || !os.SameFile(before, after) {
+			continue
+		}
+		c.mu.Lock()
+		if _, exists := c.entries[path]; !exists && len(c.entries) >= maxHashCacheEntries {
+			for victim := range c.entries {
+				delete(c.entries, victim)
+				break
+			}
+		}
+		c.entries[path] = hashCacheEntry{
+			Size:    after.Size(),
+			ModTime: after.ModTime(),
+			Hash:    hash,
+			Info:    after,
+		}
+		c.mu.Unlock()
+		return hash, nil
 	}
-	c.mu.Lock()
-	c.entries[path] = hashCacheEntry{
-		Size:    stat.Size(),
-		ModTime: stat.ModTime(),
-		Hash:    hash,
-	}
-	c.mu.Unlock()
-	return hash, nil
+	return "", fmt.Errorf("file changed while hashing: %s", path)
 }

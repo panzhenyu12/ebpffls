@@ -1,0 +1,19 @@
+{
+  "schema_version": "agent-replay/v1",
+  "baseline": "legacy-v1",
+  "id": "legacy-log-first",
+  "classification": "known-limitation",
+  "description": "A first matching log rule suppresses both a later kill rule and an already reached global threshold.",
+  "follow_up": "AD-03: compare legacy first-match against explicit opt-in evidence arbitration; do not carry this behavior into the new engine.",
+  "policy": {
+    "window_ms": 10000, "threshold": 1, "action": "kill", "write_score": 1,
+    "rules": [
+      {"name": "observe", "feature": "distinct_paths", "op": ">=", "value": 1, "action": "log", "reason": "observe rule"},
+      {"name": "enforce", "feature": "distinct_paths", "op": ">=", "value": 1, "action": "kill", "reason": "enforce rule"}
+    ]
+  },
+  "events": [
+    {"at_ms": 0, "type": "open", "arg0": 1, "arg1": 3, "path": "/replay/protected/a",
+      "want": {"tracked_fds": 1, "alerts": 1, "candidate_actions": [{"action": "log", "dry_run": true}], "state": {"score": 1, "event_count": 1, "write_count": 1, "features": {"distinct_paths": 1, "open_write_pairs": 1}, "reasons": ["write-open in protected scope", "observe rule"], "history_types": ["open"]}}}
+  ]
+}

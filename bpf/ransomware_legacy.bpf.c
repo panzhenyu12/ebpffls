@@ -27,6 +27,7 @@
 
 #include <bpf/bpf_helpers.h>
 #include "events.h"
+#include "legacy_maps.h"
 
 char LICENSE[] SEC("license") = "Dual MIT/GPL";
 
@@ -60,6 +61,14 @@ struct pending_dup {
 	__s32 newfd;
 };
 
+struct pending_write {
+	__u64 operation_id;
+	__u64 size;
+	__s64 syscall_id;
+	__s32 fd;
+	__u32 vector;
+};
+
 struct bpf_map_def SEC("maps") events = {
 	.type = BPF_MAP_TYPE_PERF_EVENT_ARRAY,
 	.key_size = sizeof(__u32),
@@ -75,6 +84,13 @@ struct bpf_map_def SEC("maps") scratch_events = {
 };
 
 struct bpf_map_def SEC("maps") ringbuf_drops = {
+	.type = BPF_MAP_TYPE_ARRAY,
+	.key_size = sizeof(__u32),
+	.value_size = sizeof(__u64),
+	.max_entries = 1,
+};
+
+struct bpf_map_def SEC("maps") capture_gaps = {
 	.type = BPF_MAP_TYPE_ARRAY,
 	.key_size = sizeof(__u32),
 	.value_size = sizeof(__u64),
@@ -137,6 +153,23 @@ struct bpf_map_def SEC("maps") pending_dups = {
 	.max_entries = 16384,
 };
 
+struct bpf_map_def SEC("maps") pending_writes = {
+	.type = BPF_MAP_TYPE_HASH,
+	.key_size = sizeof(__u64),
+	.value_size = sizeof(struct pending_write),
+	.max_entries = 16384,
+};
+
+static __always_inline void count_event_drop(void)
+{
+	// Counts detected capture gaps, not an exact number of lost events.
+	__u32 key = 0;
+	__u64 *drops = bpf_map_lookup_elem(&capture_gaps, &key);
+
+	if (drops)
+		__sync_fetch_and_add(drops, 1);
+}
+
 static __always_inline struct event *new_event(__u32 type)
 {
 	__u32 key = 0;
@@ -152,6 +185,9 @@ static __always_inline struct event *new_event(__u32 type)
 	e->tgid = (__u32)(pid_tgid >> 32);
 	e->uid = (__u32)uid_gid;
 	e->type = type;
+	e->version = EVENT_VERSION;
+	e->phase = EVENT_PHASE_ATTEMPT;
+	e->source = EVENT_SOURCE_TRACEPOINT;
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
 	return e;
 }
@@ -160,14 +196,24 @@ static __always_inline int emit_event(void *ctx, struct event *e)
 {
 	if (!e)
 		return 0;
-	bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, e, sizeof(*e));
+	if (bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, e, sizeof(*e)) != 0)
+		count_event_drop();
 	return 0;
 }
 
 static __always_inline struct block_entry *current_block_entry(void)
 {
+	__u64 now = bpf_ktime_get_ns();
 	__u32 tgid = (__u32)(bpf_get_current_pid_tgid() >> 32);
-	return bpf_map_lookup_elem(&blocked_tgids, &tgid);
+	struct block_entry *entry = bpf_map_lookup_elem(&blocked_tgids, &tgid);
+
+	if (!entry)
+		return 0;
+	if (entry->expires_ns != 0 && entry->expires_ns < now) {
+		bpf_map_delete_elem(&blocked_tgids, &tgid);
+		return 0;
+	}
+	return entry;
 }
 
 static __always_inline int enforce_blocked_syscall(struct pt_regs *ctx)
@@ -230,8 +276,34 @@ int trace_execve(struct trace_event_raw_sys_enter *ctx)
 	struct event *e = new_event(EVENT_EXEC);
 	if (!e)
 		return 0;
+	e->syscall_id = ctx->id;
+	e->flags = EVENT_SYSCALL_ID_VALID;
 	bpf_probe_read_str(e->path, sizeof(e->path), (const void *)ctx->args[0]);
 	return emit_event(ctx, e);
+}
+
+SEC("tracepoint/sched/sched_process_exec")
+int trace_exec_success(void *ctx)
+{
+	struct event *e = new_event(EVENT_EXEC);
+	if (!e)
+		return 0;
+	e->phase = EVENT_PHASE_SUCCESS;
+	e->source = EVENT_SOURCE_SCHED;
+	return emit_event(ctx, e);
+}
+
+SEC("tracepoint/sched/sched_process_exit")
+int trace_process_exit(void *ctx)
+{
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+
+	if (bpf_map_lookup_elem(&pending_writes, &pid_tgid))
+		count_event_drop();
+	bpf_map_delete_elem(&pending_writes, &pid_tgid);
+	bpf_map_delete_elem(&pending_opens, &pid_tgid);
+	bpf_map_delete_elem(&pending_dups, &pid_tgid);
+	return 0;
 }
 
 SEC("tracepoint/syscalls/sys_enter_openat")
@@ -247,8 +319,7 @@ int trace_openat(struct trace_event_raw_sys_enter *ctx)
 	return 0;
 }
 
-SEC("tracepoint/syscalls/sys_exit_openat")
-int trace_openat_exit(struct trace_event_raw_sys_exit *ctx)
+static __always_inline int complete_open(struct trace_event_raw_sys_exit *ctx)
 {
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 	struct pending_open *pending = bpf_map_lookup_elem(&pending_opens, &pid_tgid);
@@ -257,18 +328,26 @@ int trace_openat_exit(struct trace_event_raw_sys_exit *ctx)
 
 	if (!pending)
 		return 0;
-	if (fd >= 0) {
-		e = new_event(EVENT_OPEN);
-		if (e) {
-			e->arg0 = pending->flags;
-			e->arg1 = fd;
-			e->size = (__u64)(__u32)pending->dirfd;
-			__builtin_memcpy(e->path, pending->path, sizeof(e->path));
-			emit_event(ctx, e);
-		}
+	e = new_event(EVENT_OPEN);
+	if (e) {
+		e->phase = fd >= 0 ? EVENT_PHASE_SUCCESS : EVENT_PHASE_FAILURE;
+		e->syscall_id = ctx->id;
+		e->result = ctx->ret;
+		e->flags = EVENT_RESULT_VALID | EVENT_SYSCALL_ID_VALID;
+		e->arg0 = pending->flags;
+		e->arg1 = fd;
+		e->size = (__u64)(__u32)pending->dirfd;
+		__builtin_memcpy(e->path, pending->path, sizeof(e->path));
+		emit_event(ctx, e);
 	}
 	bpf_map_delete_elem(&pending_opens, &pid_tgid);
 	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_openat")
+int trace_openat_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	return complete_open(ctx);
 }
 
 SEC("tracepoint/syscalls/sys_enter_openat2")
@@ -279,7 +358,7 @@ int trace_openat2(struct trace_event_raw_sys_enter *ctx)
 
 	pending.dirfd = (__s32)ctx->args[0];
 	bpf_probe_read_str(pending.path, sizeof(pending.path), (const void *)ctx->args[1]);
-	bpf_probe_read(&pending.flags, sizeof(pending.flags), (const void *)(ctx->args[2] + 8));
+	bpf_probe_read(&pending.flags, sizeof(pending.flags), (const void *)ctx->args[2]);
 	bpf_map_update_elem(&pending_opens, &pid_tgid, &pending, BPF_ANY);
 	return 0;
 }
@@ -287,30 +366,108 @@ int trace_openat2(struct trace_event_raw_sys_enter *ctx)
 SEC("tracepoint/syscalls/sys_exit_openat2")
 int trace_openat2_exit(struct trace_event_raw_sys_exit *ctx)
 {
-	return trace_openat_exit(ctx);
+	return complete_open(ctx);
+}
+
+static __always_inline void write_metadata(struct event *e, struct pending_write *pending)
+{
+	e->arg0 = pending->fd;
+	e->size = pending->size;
+	e->operation_id = pending->operation_id;
+	e->syscall_id = pending->syscall_id;
+	e->flags = EVENT_SYSCALL_ID_VALID;
+	if (pending->vector) {
+		e->vector_count = (__u32)pending->size;
+		e->flags |= EVENT_VECTOR_COUNT_VALID;
+	} else {
+		e->requested_bytes = pending->size;
+		e->flags |= EVENT_REQUESTED_BYTES_VALID;
+	}
+}
+
+static __always_inline int remember_write(struct trace_event_raw_sys_enter *ctx, __u32 vector)
+{
+	struct pending_write pending = {};
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	struct event *e;
+
+	pending.operation_id = bpf_ktime_get_ns();
+	pending.size = (__u64)ctx->args[2];
+	pending.syscall_id = ctx->id;
+	pending.fd = (__s32)ctx->args[0];
+	pending.vector = vector;
+	if (bpf_map_update_elem(&pending_writes, &pid_tgid, &pending, BPF_ANY) != 0) {
+		count_event_drop();
+		bpf_map_delete_elem(&pending_writes, &pid_tgid);
+	}
+	e = new_event(EVENT_WRITE);
+	if (e) {
+		write_metadata(e, &pending);
+		emit_event(ctx, e);
+	}
+	return 0;
+}
+
+static __always_inline int complete_write(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	struct pending_write *pending = bpf_map_lookup_elem(&pending_writes, &pid_tgid);
+	struct event *e;
+
+	if (!pending)
+		return 0;
+	if (pending->syscall_id != ctx->id) {
+		count_event_drop();
+		bpf_map_delete_elem(&pending_writes, &pid_tgid);
+		return 0;
+	}
+	e = new_event(EVENT_WRITE);
+	if (e) {
+		write_metadata(e, pending);
+		e->phase = ctx->ret >= 0 ? EVENT_PHASE_SUCCESS : EVENT_PHASE_FAILURE;
+		e->result = ctx->ret;
+		e->actual_bytes = ctx->ret > 0 ? (__u64)ctx->ret : 0;
+		e->flags |= EVENT_RESULT_VALID | EVENT_ACTUAL_BYTES_VALID;
+		emit_event(ctx, e);
+	}
+	bpf_map_delete_elem(&pending_writes, &pid_tgid);
+	return 0;
 }
 
 SEC("tracepoint/syscalls/sys_enter_write")
 int trace_write(struct trace_event_raw_sys_enter *ctx)
 {
-	struct event *e = new_event(EVENT_WRITE);
-	if (!e)
-		return 0;
-	e->arg0 = (__s32)ctx->args[0];
-	e->size = (__u64)ctx->args[2];
-	return emit_event(ctx, e);
+	return remember_write(ctx, 0);
+}
+
+SEC("tracepoint/syscalls/sys_exit_write")
+int trace_write_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	return complete_write(ctx);
 }
 
 SEC("tracepoint/syscalls/sys_enter_pwrite64")
 int trace_pwrite64(struct trace_event_raw_sys_enter *ctx)
 {
-	return trace_write(ctx);
+	return remember_write(ctx, 0);
+}
+
+SEC("tracepoint/syscalls/sys_exit_pwrite64")
+int trace_pwrite64_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	return complete_write(ctx);
 }
 
 SEC("tracepoint/syscalls/sys_enter_writev")
 int trace_writev(struct trace_event_raw_sys_enter *ctx)
 {
-	return trace_write(ctx);
+	return remember_write(ctx, 1);
+}
+
+SEC("tracepoint/syscalls/sys_exit_writev")
+int trace_writev_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	return complete_write(ctx);
 }
 
 SEC("tracepoint/syscalls/sys_enter_copy_file_range")
@@ -400,8 +557,7 @@ int trace_dup(struct trace_event_raw_sys_enter *ctx)
 	return 0;
 }
 
-SEC("tracepoint/syscalls/sys_exit_dup")
-int trace_dup_exit(struct trace_event_raw_sys_exit *ctx)
+static __always_inline int complete_dup(struct trace_event_raw_sys_exit *ctx)
 {
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 	struct pending_dup *pending = bpf_map_lookup_elem(&pending_dups, &pid_tgid);
@@ -413,6 +569,10 @@ int trace_dup_exit(struct trace_event_raw_sys_exit *ctx)
 	if (newfd >= 0) {
 		e = new_event(EVENT_DUP);
 		if (e) {
+			e->phase = EVENT_PHASE_SUCCESS;
+			e->syscall_id = ctx->id;
+			e->result = ctx->ret;
+			e->flags = EVENT_RESULT_VALID | EVENT_SYSCALL_ID_VALID;
 			e->arg0 = pending->oldfd;
 			e->arg1 = newfd;
 			emit_event(ctx, e);
@@ -422,8 +582,13 @@ int trace_dup_exit(struct trace_event_raw_sys_exit *ctx)
 	return 0;
 }
 
-SEC("tracepoint/syscalls/sys_enter_dup2")
-int trace_dup2(struct trace_event_raw_sys_enter *ctx)
+SEC("tracepoint/syscalls/sys_exit_dup")
+int trace_dup_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	return complete_dup(ctx);
+}
+
+static __always_inline int remember_dup2(struct trace_event_raw_sys_enter *ctx)
 {
 	struct pending_dup pending = {};
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
@@ -434,22 +599,28 @@ int trace_dup2(struct trace_event_raw_sys_enter *ctx)
 	return 0;
 }
 
+SEC("tracepoint/syscalls/sys_enter_dup2")
+int trace_dup2(struct trace_event_raw_sys_enter *ctx)
+{
+	return remember_dup2(ctx);
+}
+
 SEC("tracepoint/syscalls/sys_exit_dup2")
 int trace_dup2_exit(struct trace_event_raw_sys_exit *ctx)
 {
-	return trace_dup_exit(ctx);
+	return complete_dup(ctx);
 }
 
 SEC("tracepoint/syscalls/sys_enter_dup3")
 int trace_dup3(struct trace_event_raw_sys_enter *ctx)
 {
-	return trace_dup2(ctx);
+	return remember_dup2(ctx);
 }
 
 SEC("tracepoint/syscalls/sys_exit_dup3")
 int trace_dup3_exit(struct trace_event_raw_sys_exit *ctx)
 {
-	return trace_dup_exit(ctx);
+	return complete_dup(ctx);
 }
 
 SEC("tracepoint/syscalls/sys_enter_fcntl")
@@ -470,7 +641,7 @@ int trace_fcntl(struct trace_event_raw_sys_enter *ctx)
 SEC("tracepoint/syscalls/sys_exit_fcntl")
 int trace_fcntl_exit(struct trace_event_raw_sys_exit *ctx)
 {
-	return trace_dup_exit(ctx);
+	return complete_dup(ctx);
 }
 
 SEC("tracepoint/syscalls/sys_enter_rename")

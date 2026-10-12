@@ -65,8 +65,12 @@ type ransomwareUltraLegacyProgramSpecs struct {
 	KpOverrideUnlink    *ebpf.ProgramSpec `ebpf:"kp_override_unlink"`
 	KpOverrideWrite     *ebpf.ProgramSpec `ebpf:"kp_override_write"`
 	KpOverrideWritev    *ebpf.ProgramSpec `ebpf:"kp_override_writev"`
+	KpProcessExit       *ebpf.ProgramSpec `ebpf:"kp_process_exit"`
 	KpRetOpen           *ebpf.ProgramSpec `ebpf:"kp_ret_open"`
 	KpRetOpenat         *ebpf.ProgramSpec `ebpf:"kp_ret_openat"`
+	KpRetPwrite64       *ebpf.ProgramSpec `ebpf:"kp_ret_pwrite64"`
+	KpRetWrite          *ebpf.ProgramSpec `ebpf:"kp_ret_write"`
+	KpRetWritev         *ebpf.ProgramSpec `ebpf:"kp_ret_writev"`
 }
 
 // ransomwareUltraLegacyMapSpecs contains maps before they are loaded into the kernel.
@@ -75,15 +79,18 @@ type ransomwareUltraLegacyProgramSpecs struct {
 type ransomwareUltraLegacyMapSpecs struct {
 	AllowedCgroups     *ebpf.MapSpec `ebpf:"allowed_cgroups"`
 	BlockedTgids       *ebpf.MapSpec `ebpf:"blocked_tgids"`
+	CaptureGaps        *ebpf.MapSpec `ebpf:"capture_gaps"`
 	CgroupScopeEnabled *ebpf.MapSpec `ebpf:"cgroup_scope_enabled"`
 	EventCursor        *ebpf.MapSpec `ebpf:"event_cursor"`
 	Events             *ebpf.MapSpec `ebpf:"events"`
 	IocExtensions      *ebpf.MapSpec `ebpf:"ioc_extensions"`
 	IocRansomNotes     *ebpf.MapSpec `ebpf:"ioc_ransom_notes"`
 	PendingOpens       *ebpf.MapSpec `ebpf:"pending_opens"`
+	PendingWrites      *ebpf.MapSpec `ebpf:"pending_writes"`
 	ProtectedDirs      *ebpf.MapSpec `ebpf:"protected_dirs"`
 	RingbufDrops       *ebpf.MapSpec `ebpf:"ringbuf_drops"`
 	ScratchEvents      *ebpf.MapSpec `ebpf:"scratch_events"`
+	SyscallAbi         *ebpf.MapSpec `ebpf:"syscall_abi"`
 }
 
 // ransomwareUltraLegacyObjects contains all objects after they have been loaded into the kernel.
@@ -107,30 +114,36 @@ func (o *ransomwareUltraLegacyObjects) Close() error {
 type ransomwareUltraLegacyMaps struct {
 	AllowedCgroups     *ebpf.Map `ebpf:"allowed_cgroups"`
 	BlockedTgids       *ebpf.Map `ebpf:"blocked_tgids"`
+	CaptureGaps        *ebpf.Map `ebpf:"capture_gaps"`
 	CgroupScopeEnabled *ebpf.Map `ebpf:"cgroup_scope_enabled"`
 	EventCursor        *ebpf.Map `ebpf:"event_cursor"`
 	Events             *ebpf.Map `ebpf:"events"`
 	IocExtensions      *ebpf.Map `ebpf:"ioc_extensions"`
 	IocRansomNotes     *ebpf.Map `ebpf:"ioc_ransom_notes"`
 	PendingOpens       *ebpf.Map `ebpf:"pending_opens"`
+	PendingWrites      *ebpf.Map `ebpf:"pending_writes"`
 	ProtectedDirs      *ebpf.Map `ebpf:"protected_dirs"`
 	RingbufDrops       *ebpf.Map `ebpf:"ringbuf_drops"`
 	ScratchEvents      *ebpf.Map `ebpf:"scratch_events"`
+	SyscallAbi         *ebpf.Map `ebpf:"syscall_abi"`
 }
 
 func (m *ransomwareUltraLegacyMaps) Close() error {
 	return _RansomwareUltraLegacyClose(
 		m.AllowedCgroups,
 		m.BlockedTgids,
+		m.CaptureGaps,
 		m.CgroupScopeEnabled,
 		m.EventCursor,
 		m.Events,
 		m.IocExtensions,
 		m.IocRansomNotes,
 		m.PendingOpens,
+		m.PendingWrites,
 		m.ProtectedDirs,
 		m.RingbufDrops,
 		m.ScratchEvents,
+		m.SyscallAbi,
 	)
 }
 
@@ -150,8 +163,12 @@ type ransomwareUltraLegacyPrograms struct {
 	KpOverrideUnlink    *ebpf.Program `ebpf:"kp_override_unlink"`
 	KpOverrideWrite     *ebpf.Program `ebpf:"kp_override_write"`
 	KpOverrideWritev    *ebpf.Program `ebpf:"kp_override_writev"`
+	KpProcessExit       *ebpf.Program `ebpf:"kp_process_exit"`
 	KpRetOpen           *ebpf.Program `ebpf:"kp_ret_open"`
 	KpRetOpenat         *ebpf.Program `ebpf:"kp_ret_openat"`
+	KpRetPwrite64       *ebpf.Program `ebpf:"kp_ret_pwrite64"`
+	KpRetWrite          *ebpf.Program `ebpf:"kp_ret_write"`
+	KpRetWritev         *ebpf.Program `ebpf:"kp_ret_writev"`
 }
 
 func (p *ransomwareUltraLegacyPrograms) Close() error {
@@ -168,8 +185,12 @@ func (p *ransomwareUltraLegacyPrograms) Close() error {
 		p.KpOverrideUnlink,
 		p.KpOverrideWrite,
 		p.KpOverrideWritev,
+		p.KpProcessExit,
 		p.KpRetOpen,
 		p.KpRetOpenat,
+		p.KpRetPwrite64,
+		p.KpRetWrite,
+		p.KpRetWritev,
 	)
 }
 

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -161,5 +162,89 @@ rules:
 
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load succeeded, want invalid rule error")
+	}
+}
+
+func TestLoadRejectsInvalidPolicyRuntimeValues(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{name: "action", yaml: "action: quarantine\n", want: "unsupported action"},
+		{name: "window", yaml: "window: 0s\n", want: "window must be greater than zero"},
+		{name: "block ttl", yaml: "block_ttl: -1s\n", want: "block_ttl must not be negative"},
+		{name: "score", yaml: "scores:\n  write: -1\n", want: "score write must not be negative"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "policy.yaml")
+			if err := os.WriteFile(path, []byte("name: invalid\n"+tt.yaml), 0600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			_, err := Load(path)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadNormalizesIOCNames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.yaml")
+	if err := os.WriteFile(path, []byte(`
+name: ioc-normalize
+suspicious_extensions:
+  - LOCKED
+  - " .enc "
+ransom_note_names:
+  - " README.txt "
+`), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	policy, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := policy.SuspiciousExtensions; len(got) != 2 || got[0] != ".locked" || got[1] != ".enc" {
+		t.Fatalf("suspicious_extensions = %#v", got)
+	}
+	if got := policy.RansomNoteNames; len(got) != 1 || got[0] != "README.txt" {
+		t.Fatalf("ransom_note_names = %#v", got)
+	}
+}
+
+func TestLoadRejectsUnknownFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.yaml")
+	if err := os.WriteFile(path, []byte("name: strict\nthreshhold: 10\n"), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "field threshhold not found") {
+		t.Fatalf("Load error = %v, want unknown-field error", err)
+	}
+}
+
+func TestLoadValidatesNetworkAllowlists(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{name: "CIDR", yaml: "allowed_cidrs:\n    - not-a-cidr", want: "invalid network_egress allowed CIDR"},
+		{name: "low port", yaml: "allowed_ports:\n    - 0", want: "must be between 1 and 65535"},
+		{name: "high port", yaml: "allowed_ports:\n    - 65536", want: "must be between 1 and 65535"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "policy.yaml")
+			data := "name: network\nnetwork_egress:\n  enabled: true\n  " + tt.yaml + "\n"
+			if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			if _, err := Load(path); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load error = %v, want substring %q", err, tt.want)
+			}
+		})
 	}
 }

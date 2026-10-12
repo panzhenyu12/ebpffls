@@ -1,0 +1,19 @@
+{
+  "schema_version": "agent-replay/v1",
+  "baseline": "legacy-v1",
+  "id": "legacy-window-boundary",
+  "classification": "regression",
+  "description": "The sliding window includes events exactly one window old and removes older contributions from score, distinct paths, writable-open count, and history.",
+  "follow_up": "AD-04: retain explicit window-boundary tests when adding multi-window features; report late or missing events separately.",
+  "policy": {"window_ms": 10000, "threshold": 100, "action": "log", "write_score": 1},
+  "events": [
+    {"at_ms": 0, "type": "open", "arg0": 1, "arg1": 3, "path": "/replay/protected/a",
+      "want": {"tracked_fds": 1, "state": {"score": 1, "event_count": 1, "write_count": 1, "features": {"distinct_paths": 1, "open_write_pairs": 1}, "reasons": ["write-open in protected scope"], "history_types": ["open"]}}},
+    {"at_ms": 10000, "type": "open", "arg0": 1, "arg1": 4, "path": "/replay/protected/b",
+      "want": {"tracked_fds": 2, "state": {"score": 2, "event_count": 2, "write_count": 2, "last_seen_ms": 10000, "features": {"distinct_paths": 2, "open_write_pairs": 2}, "reasons": ["write-open in protected scope"], "history_types": ["open", "open"]}}},
+    {"at_ms": 10001, "type": "open", "arg0": 1, "arg1": 5, "path": "/replay/protected/c",
+      "want": {"tracked_fds": 3, "state": {"score": 2, "event_count": 2, "write_count": 2, "first_seen_ms": 10000, "last_seen_ms": 10001, "features": {"distinct_paths": 2, "open_write_pairs": 2}, "reasons": ["write-open in protected scope"], "history_types": ["open", "open"]}}},
+    {"at_ms": 20001, "type": "write", "arg0": 5, "size": 4096,
+      "want": {"tracked_fds": 3, "state": {"score": 2, "event_count": 2, "write_count": 2, "first_seen_ms": 10001, "last_seen_ms": 20001, "features": {"distinct_paths": 1, "open_write_pairs": 1}, "reasons": ["write-open in protected scope", "write syscall on protected fd"], "history_types": ["open", "write"]}}}
+  ]
+}

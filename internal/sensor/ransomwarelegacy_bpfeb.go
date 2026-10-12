@@ -83,6 +83,7 @@ type ransomwareLegacyProgramSpecs struct {
 	TraceDup3               *ebpf.ProgramSpec `ebpf:"trace_dup3"`
 	TraceDup3Exit           *ebpf.ProgramSpec `ebpf:"trace_dup3_exit"`
 	TraceDupExit            *ebpf.ProgramSpec `ebpf:"trace_dup_exit"`
+	TraceExecSuccess        *ebpf.ProgramSpec `ebpf:"trace_exec_success"`
 	TraceExecve             *ebpf.ProgramSpec `ebpf:"trace_execve"`
 	TraceFcntl              *ebpf.ProgramSpec `ebpf:"trace_fcntl"`
 	TraceFcntlExit          *ebpf.ProgramSpec `ebpf:"trace_fcntl_exit"`
@@ -96,7 +97,9 @@ type ransomwareLegacyProgramSpecs struct {
 	TraceOpenat2            *ebpf.ProgramSpec `ebpf:"trace_openat2"`
 	TraceOpenat2Exit        *ebpf.ProgramSpec `ebpf:"trace_openat2_exit"`
 	TraceOpenatExit         *ebpf.ProgramSpec `ebpf:"trace_openat_exit"`
+	TraceProcessExit        *ebpf.ProgramSpec `ebpf:"trace_process_exit"`
 	TracePwrite64           *ebpf.ProgramSpec `ebpf:"trace_pwrite64"`
+	TracePwrite64Exit       *ebpf.ProgramSpec `ebpf:"trace_pwrite64_exit"`
 	TraceRename             *ebpf.ProgramSpec `ebpf:"trace_rename"`
 	TraceRenameat           *ebpf.ProgramSpec `ebpf:"trace_renameat"`
 	TraceRenameat2          *ebpf.ProgramSpec `ebpf:"trace_renameat2"`
@@ -106,7 +109,9 @@ type ransomwareLegacyProgramSpecs struct {
 	TraceUnlink             *ebpf.ProgramSpec `ebpf:"trace_unlink"`
 	TraceUnlinkat           *ebpf.ProgramSpec `ebpf:"trace_unlinkat"`
 	TraceWrite              *ebpf.ProgramSpec `ebpf:"trace_write"`
+	TraceWriteExit          *ebpf.ProgramSpec `ebpf:"trace_write_exit"`
 	TraceWritev             *ebpf.ProgramSpec `ebpf:"trace_writev"`
+	TraceWritevExit         *ebpf.ProgramSpec `ebpf:"trace_writev_exit"`
 }
 
 // ransomwareLegacyMapSpecs contains maps before they are loaded into the kernel.
@@ -115,12 +120,14 @@ type ransomwareLegacyProgramSpecs struct {
 type ransomwareLegacyMapSpecs struct {
 	AllowedCgroups     *ebpf.MapSpec `ebpf:"allowed_cgroups"`
 	BlockedTgids       *ebpf.MapSpec `ebpf:"blocked_tgids"`
+	CaptureGaps        *ebpf.MapSpec `ebpf:"capture_gaps"`
 	CgroupScopeEnabled *ebpf.MapSpec `ebpf:"cgroup_scope_enabled"`
 	Events             *ebpf.MapSpec `ebpf:"events"`
 	IocExtensions      *ebpf.MapSpec `ebpf:"ioc_extensions"`
 	IocRansomNotes     *ebpf.MapSpec `ebpf:"ioc_ransom_notes"`
 	PendingDups        *ebpf.MapSpec `ebpf:"pending_dups"`
 	PendingOpens       *ebpf.MapSpec `ebpf:"pending_opens"`
+	PendingWrites      *ebpf.MapSpec `ebpf:"pending_writes"`
 	ProtectedDirs      *ebpf.MapSpec `ebpf:"protected_dirs"`
 	RingbufDrops       *ebpf.MapSpec `ebpf:"ringbuf_drops"`
 	ScratchEvents      *ebpf.MapSpec `ebpf:"scratch_events"`
@@ -147,12 +154,14 @@ func (o *ransomwareLegacyObjects) Close() error {
 type ransomwareLegacyMaps struct {
 	AllowedCgroups     *ebpf.Map `ebpf:"allowed_cgroups"`
 	BlockedTgids       *ebpf.Map `ebpf:"blocked_tgids"`
+	CaptureGaps        *ebpf.Map `ebpf:"capture_gaps"`
 	CgroupScopeEnabled *ebpf.Map `ebpf:"cgroup_scope_enabled"`
 	Events             *ebpf.Map `ebpf:"events"`
 	IocExtensions      *ebpf.Map `ebpf:"ioc_extensions"`
 	IocRansomNotes     *ebpf.Map `ebpf:"ioc_ransom_notes"`
 	PendingDups        *ebpf.Map `ebpf:"pending_dups"`
 	PendingOpens       *ebpf.Map `ebpf:"pending_opens"`
+	PendingWrites      *ebpf.Map `ebpf:"pending_writes"`
 	ProtectedDirs      *ebpf.Map `ebpf:"protected_dirs"`
 	RingbufDrops       *ebpf.Map `ebpf:"ringbuf_drops"`
 	ScratchEvents      *ebpf.Map `ebpf:"scratch_events"`
@@ -162,12 +171,14 @@ func (m *ransomwareLegacyMaps) Close() error {
 	return _RansomwareLegacyClose(
 		m.AllowedCgroups,
 		m.BlockedTgids,
+		m.CaptureGaps,
 		m.CgroupScopeEnabled,
 		m.Events,
 		m.IocExtensions,
 		m.IocRansomNotes,
 		m.PendingDups,
 		m.PendingOpens,
+		m.PendingWrites,
 		m.ProtectedDirs,
 		m.RingbufDrops,
 		m.ScratchEvents,
@@ -208,6 +219,7 @@ type ransomwareLegacyPrograms struct {
 	TraceDup3               *ebpf.Program `ebpf:"trace_dup3"`
 	TraceDup3Exit           *ebpf.Program `ebpf:"trace_dup3_exit"`
 	TraceDupExit            *ebpf.Program `ebpf:"trace_dup_exit"`
+	TraceExecSuccess        *ebpf.Program `ebpf:"trace_exec_success"`
 	TraceExecve             *ebpf.Program `ebpf:"trace_execve"`
 	TraceFcntl              *ebpf.Program `ebpf:"trace_fcntl"`
 	TraceFcntlExit          *ebpf.Program `ebpf:"trace_fcntl_exit"`
@@ -221,7 +233,9 @@ type ransomwareLegacyPrograms struct {
 	TraceOpenat2            *ebpf.Program `ebpf:"trace_openat2"`
 	TraceOpenat2Exit        *ebpf.Program `ebpf:"trace_openat2_exit"`
 	TraceOpenatExit         *ebpf.Program `ebpf:"trace_openat_exit"`
+	TraceProcessExit        *ebpf.Program `ebpf:"trace_process_exit"`
 	TracePwrite64           *ebpf.Program `ebpf:"trace_pwrite64"`
+	TracePwrite64Exit       *ebpf.Program `ebpf:"trace_pwrite64_exit"`
 	TraceRename             *ebpf.Program `ebpf:"trace_rename"`
 	TraceRenameat           *ebpf.Program `ebpf:"trace_renameat"`
 	TraceRenameat2          *ebpf.Program `ebpf:"trace_renameat2"`
@@ -231,7 +245,9 @@ type ransomwareLegacyPrograms struct {
 	TraceUnlink             *ebpf.Program `ebpf:"trace_unlink"`
 	TraceUnlinkat           *ebpf.Program `ebpf:"trace_unlinkat"`
 	TraceWrite              *ebpf.Program `ebpf:"trace_write"`
+	TraceWriteExit          *ebpf.Program `ebpf:"trace_write_exit"`
 	TraceWritev             *ebpf.Program `ebpf:"trace_writev"`
+	TraceWritevExit         *ebpf.Program `ebpf:"trace_writev_exit"`
 }
 
 func (p *ransomwareLegacyPrograms) Close() error {
@@ -266,6 +282,7 @@ func (p *ransomwareLegacyPrograms) Close() error {
 		p.TraceDup3,
 		p.TraceDup3Exit,
 		p.TraceDupExit,
+		p.TraceExecSuccess,
 		p.TraceExecve,
 		p.TraceFcntl,
 		p.TraceFcntlExit,
@@ -279,7 +296,9 @@ func (p *ransomwareLegacyPrograms) Close() error {
 		p.TraceOpenat2,
 		p.TraceOpenat2Exit,
 		p.TraceOpenatExit,
+		p.TraceProcessExit,
 		p.TracePwrite64,
+		p.TracePwrite64Exit,
 		p.TraceRename,
 		p.TraceRenameat,
 		p.TraceRenameat2,
@@ -289,7 +308,9 @@ func (p *ransomwareLegacyPrograms) Close() error {
 		p.TraceUnlink,
 		p.TraceUnlinkat,
 		p.TraceWrite,
+		p.TraceWriteExit,
 		p.TraceWritev,
+		p.TraceWritevExit,
 	)
 }
 

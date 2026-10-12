@@ -2,19 +2,25 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN="${ROOT_DIR}/bin/ebpffls"
+BIN="${EBPFFLS_BIN:-${ROOT_DIR}/bin/ebpffls}"
 RANSOMWARE_SIM="${ROOT_DIR}/tests/ransomware_sim.py"
-TMP_DIR="$(mktemp -d /tmp/ebpffls-it.XXXXXX)"
+TMP_DIR=""
 AGENT_PID=""
 BADLOOP=""
 SPOOF=""
-
-if [[ "${EUID}" -ne 0 ]]; then
-  echo "integration tests must run as root" >&2
-  exit 1
-fi
+CURRENT_TEST=""
+CURRENT_TEST_UNSUPPORTED=0
+UNSUPPORTED_COUNT=0
+TIMEOUT_SCALE="${EBPFFLS_TEST_TIMEOUT_SCALE:-1}"
+RESULTS_FILE="${EBPFFLS_INTEGRATION_RESULTS_FILE:-}"
+DENY_PROBED=false
+DENY_REJECTION_VERIFIED=false
 
 cleanup() {
+  local rc="$1"
+  if [[ "${rc}" -ne 0 && -n "${CURRENT_TEST}" ]]; then
+    record_result FAIL "${CURRENT_TEST}" "exit=${rc}"
+  fi
   if [[ -n "${AGENT_PID}" ]]; then
     kill "${AGENT_PID}" 2>/dev/null || true
     wait "${AGENT_PID}" 2>/dev/null || true
@@ -25,9 +31,19 @@ cleanup() {
   if [[ -n "${SPOOF}" ]]; then
     pkill -f "${SPOOF}" 2>/dev/null || true
   fi
-  rm -rf "${TMP_DIR}"
+  if [[ -n "${TMP_DIR}" ]]; then
+    if [[ -n "${EBPFFLS_INTEGRATION_ARTIFACTS_DIR:-}" ]]; then
+      mkdir -p "${EBPFFLS_INTEGRATION_ARTIFACTS_DIR}"
+      cp -a "${TMP_DIR}" "${EBPFFLS_INTEGRATION_ARTIFACTS_DIR}/"
+    fi
+    if [[ "${EBPFFLS_INTEGRATION_KEEP_TMP:-0}" == 1 ]]; then
+      log "artifacts=${TMP_DIR}"
+    else
+      rm -rf "${TMP_DIR}"
+    fi
+  fi
 }
-trap cleanup EXIT
+trap 'cleanup "$?"' EXIT
 
 log() {
   printf '[integration] %s\n' "$*"
@@ -36,6 +52,45 @@ log() {
 fail() {
   echo "[integration] FAIL: $*" >&2
   exit 1
+}
+
+record_result() {
+  local status="$1"
+  local name="$2"
+  local detail="${3:-}"
+  log "RESULT status=${status} test=${name} detail=${detail}"
+  if [[ -n "${RESULTS_FILE}" ]]; then
+    printf '%s\t%s\t%s\n' "${name}" "${status}" "${detail}" >>"${RESULTS_FILE}"
+  fi
+}
+
+unsupported() {
+  CURRENT_TEST_UNSUPPORTED=1
+  UNSUPPORTED_COUNT=$((UNSUPPORTED_COUNT + 1))
+  record_result UNSUPPORTED "${CURRENT_TEST}/${1}" "$2"
+}
+
+wait_for_agent_start() {
+  local logfile="$1"
+  local expected_mode="${2:-}"
+  local tries=$((150 * TIMEOUT_SCALE))
+  local i
+  for ((i = 0; i < tries; i++)); do
+    if ! kill -0 "${AGENT_PID}" 2>/dev/null; then
+      tail -100 "${logfile}" >&2 || true
+      fail "agent exited before ready"
+    fi
+    if grep -q 'started policy=' "${logfile}"; then
+      if [[ -n "${expected_mode}" ]] && ! grep -Eq "bpf_ready mode=${expected_mode}([[:space:]]|$)" "${logfile}"; then
+        tail -100 "${logfile}" >&2 || true
+        fail "forced runtime ${expected_mode} did not become ready; silent fallback is not accepted"
+      fi
+      return
+    fi
+    sleep 0.1
+  done
+  tail -100 "${logfile}" >&2 || true
+  fail "agent startup timed out after $((15 * TIMEOUT_SCALE))s"
 }
 
 stop_agent() {
@@ -125,11 +180,7 @@ start_agent() {
     fi
   fi
   AGENT_PID="$!"
-  sleep 1
-  kill -0 "${AGENT_PID}" 2>/dev/null || {
-    cat "${logfile}" >&2 || true
-    fail "agent failed to start"
-  }
+  wait_for_agent_start "${logfile}" "${bpf_mode}"
 }
 
 start_agent_multi_config() {
@@ -144,32 +195,34 @@ start_agent_multi_config() {
     "${BIN}" monitor "$@" --dry-run=false >"${logfile}" 2>&1 &
   fi
   AGENT_PID="$!"
-  sleep 1
-  kill -0 "${AGENT_PID}" 2>/dev/null || {
-    cat "${logfile}" >&2 || true
-    fail "agent failed to start"
-  }
+  wait_for_agent_start "${logfile}"
 }
 
 start_agent_debug() {
   local policy="$1"
   local logfile="$2"
+  local mode="${3:-enforce}"
+  local bpf_mode="${4:-}"
+  local args=(monitor --config "${policy}" --debug-events)
 
   stop_agent
-  "${BIN}" monitor --config "${policy}" --dry-run=false --debug-events >"${logfile}" 2>&1 &
+  if [[ "${mode}" != "dry-run" ]]; then
+    args+=(--dry-run=false)
+  fi
+  if [[ -n "${bpf_mode}" ]]; then
+    EBPFFLS_BPF_MODE="${bpf_mode}" "${BIN}" "${args[@]}" >"${logfile}" 2>&1 &
+  else
+    "${BIN}" "${args[@]}" >"${logfile}" 2>&1 &
+  fi
   AGENT_PID="$!"
-  sleep 1
-  kill -0 "${AGENT_PID}" 2>/dev/null || {
-    cat "${logfile}" >&2 || true
-    fail "agent failed to start"
-  }
+  wait_for_agent_start "${logfile}" "${bpf_mode}"
 }
 
 expect_killed() {
   local name="$1"
   shift
   set +e
-  timeout 8s "$@"
+  timeout "$((8 * TIMEOUT_SCALE))s" "$@"
   local rc=$?
   set -e
   if [[ "${rc}" -ne 137 ]]; then
@@ -181,7 +234,7 @@ expect_survives() {
   local name="$1"
   shift
   set +e
-  timeout 8s "$@"
+  timeout "$((8 * TIMEOUT_SCALE))s" "$@"
   local rc=$?
   set -e
   if [[ "${rc}" -ne 0 ]]; then
@@ -200,7 +253,7 @@ wait_for_log_for() {
   local logfile="$1"
   local pattern="$2"
   local name="$3"
-  local tries="$4"
+  local tries=$(($4 * TIMEOUT_SCALE))
 
   for _ in $(seq 1 "${tries}"); do
     if grep -q "${pattern}" "${logfile}"; then
@@ -219,12 +272,336 @@ bpf_lsm_active() {
   [[ -r /sys/kernel/security/lsm ]] && grep -qw bpf /sys/kernel/security/lsm
 }
 
+bpf_lsm_attached() {
+  local logfile="$1"
+  grep -Eq 'bpf_lsm attached=[1-9][0-9]* skipped=' "${logfile}"
+}
+
+probe_deny_capability() {
+  if [[ "${DENY_PROBED}" == true ]]; then
+    return
+  fi
+  local dir="${TMP_DIR}/deny-capability"
+  local blacklist="${dir}/blacklist.txt"
+  DENY_PROBE_POLICY="${dir}/policy.yaml"
+  DENY_PROBE_LOG="${dir}/probe.log"
+  mkdir -p "${dir}"
+  : >"${blacklist}"
+  write_policy "${DENY_PROBE_POLICY}" deny-capability 1 deny "${dir}/protected" "${blacklist}"
+  start_agent "${DENY_PROBE_POLICY}" "${DENY_PROBE_LOG}" dry-run
+  wait_for_log "${DENY_PROBE_LOG}" 'bpf_capabilities mode=' "actual attached enforcement capabilities"
+  DENY_AVAILABLE="$(sed -n 's/.* deny_available=\(true\|false\).*/\1/p' "${DENY_PROBE_LOG}" | tail -1)"
+  DENY_OPENAT="$(sed -n 's/.* deny_openat=\(true\|false\).*/\1/p' "${DENY_PROBE_LOG}" | tail -1)"
+  DENY_PROBE_MODE="$(sed -n 's/.*bpf_ready mode=\([^ ]*\).*/\1/p' "${DENY_PROBE_LOG}" | tail -1)"
+  [[ "${DENY_AVAILABLE}" == true || "${DENY_AVAILABLE}" == false ]] || fail "missing deny_available capability"
+  [[ "${DENY_OPENAT}" == true || "${DENY_OPENAT}" == false ]] || fail "missing deny_openat capability"
+  [[ -n "${DENY_PROBE_MODE}" ]] || fail "missing successful runtime mode for capability probe"
+  stop_agent
+  DENY_PROBED=true
+  log "deny_capability mode=${DENY_PROBE_MODE} available=${DENY_AVAILABLE} openat=${DENY_OPENAT}"
+}
+
+verify_unavailable_deny_rejected() {
+  if [[ "${DENY_REJECTION_VERIFIED}" == true ]]; then
+    return
+  fi
+  local rejection_log="${TMP_DIR}/deny-capability/rejected.log"
+  local rc=0
+  timeout "$((15 * TIMEOUT_SCALE))s" env EBPFFLS_BPF_MODE="${DENY_PROBE_MODE}" \
+    "${BIN}" monitor --config "${DENY_PROBE_POLICY}" --dry-run=false >"${rejection_log}" 2>&1 || rc=$?
+  [[ "${rc}" -ne 0 && "${rc}" -ne 124 && "${rc}" -ne 137 ]] || fail "unsupported deny must reject startup, got exit ${rc}"
+  grep -q 'deny enforcement unavailable' "${rejection_log}" || fail "unsupported deny did not report its capability failure"
+  if grep -q 'started policy=' "${rejection_log}"; then
+    fail "unsupported deny entered monitoring instead of rejecting startup"
+  fi
+  DENY_REJECTION_VERIFIED=true
+}
+
+require_deny_openat() {
+  probe_deny_capability
+  if [[ "${DENY_OPENAT}" == true ]]; then
+    return 0
+  fi
+  if [[ "${DENY_AVAILABLE}" == false ]]; then
+    verify_unavailable_deny_rejected
+  fi
+  unsupported deny_openat "no attached openat denial hook; deny never substituted with kill"
+  return 1
+}
+
+test_deny_capability_contract() {
+  log "deny capability is actual hook coverage, not permission to substitute kill"
+  probe_deny_capability
+  if [[ "${DENY_AVAILABLE}" == false ]]; then
+    verify_unavailable_deny_rejected
+    unsupported deny "non-dry-run deny startup rejection verified; enforcement unavailable"
+    return
+  fi
+  start_agent "${DENY_PROBE_POLICY}" "${TMP_DIR}/deny-capability/enabled.log" enforce "${DENY_PROBE_MODE}"
+  stop_agent
+  if [[ "${DENY_OPENAT}" != true ]]; then
+    unsupported deny_openat "some denial hooks are attached, but openat is not covered"
+  fi
+}
+
 write_py() {
   local path="$1"
   shift
   cat >"${path}" <<'PY'
 PY
   cat >>"${path}"
+}
+
+validate_exec_identity_run() {
+  local logfile="$1"
+  local manifest="$2"
+  local expected_trust="$3"
+  local mutation_path="$4"
+  local bpf_mode="$5"
+  python3 - "${logfile}" "${manifest}" "${expected_trust}" "${mutation_path}" "${bpf_mode}" <<'PY'
+import csv
+import json
+import pathlib
+import re
+import shlex
+import sys
+
+logfile, manifest, expected_trust, mutation_path, mode = sys.argv[1:]
+
+def check(condition, message):
+    if not condition:
+        raise SystemExit(f"exec identity ({mode}, {expected_trust}): {message}")
+
+with pathlib.Path(manifest).open() as source:
+    rows = list(csv.reader(source, delimiter="\t"))
+failures = [row for row in rows if row[0] == "exec-failure"]
+writes = [row for row in rows if row[0] == "write"]
+check(len(failures) == 1 and len(writes) == 1, "expected one failed exec and one successful write in manifest")
+_, comm, pid_text, target = failures[0]
+_, write_comm, write_pid, fd_text, _, _, _, result_text = writes[0]
+pid, fd, result = int(pid_text), int(fd_text), int(result_text)
+check(write_pid == pid_text and write_comm == comm and result == 13, "manifest identity/result mismatch")
+tgid_field = re.compile(r"(?:^| )tgid=(\d+)(?: |$)")
+events, alerts = [], []
+with pathlib.Path(logfile).open() as source:
+    for line_number, line in enumerate(source):
+        if "event type=" in line:
+            event_text = line[line.index("event type=") + 6:]
+            match = tgid_field.search(event_text)
+            if match is not None and int(match.group(1)) == pid:
+                event = dict(token.split("=", 1) for token in shlex.split(event_text))
+                events.append((line_number, event))
+        elif "alert={" in line:
+            alert = json.loads(line.split("alert=", 1)[1])
+            if alert.get("tgid") == pid:
+                alerts.append((line_number, alert))
+
+attempts = [(line, event) for line, event in events if event.get("type") == "exec"
+            and event.get("comm") == comm and event.get("path") == target and event.get("phase") == "attempt"]
+check(len(attempts) == 1, f"the fixture's failed exec attempt was not captured exactly once: {attempts}")
+attempt_line, attempt = attempts[0]
+check(attempt.get("abi") == "2", "failed exec attempt is not v2")
+completed = [(line, event) for line, event in events if line > attempt_line and event.get("type") == "write"
+             and event.get("comm") == comm and event.get("arg0") == str(fd) and event.get("phase") == "success"]
+check(len(completed) == 1, "missing the same process's successful post-failure write")
+write = completed[0][1]
+check(write.get("abi") == "2" and int(write.get("flags", "0")) & 5 == 5
+      and write.get("result") == str(result) and write.get("actual_bytes") == str(result), "post-failure write result is invalid")
+check(not any(event.get("type") == "exec" and event.get("phase") == "success"
+              for line, event in events if line > attempt_line), "failed exec emitted a success confirmation")
+if expected_trust == "trusted":
+    check(not alerts, f"trusted executable identity was lost after failed exec: {alerts}")
+else:
+    check(expected_trust == "untrusted", "unknown trust expectation")
+    candidates = [alert for line, alert in alerts if line > attempt_line and alert.get("comm") == comm
+                  and alert.get("dry_run") is True and alert.get("action") == "kill"
+                  and any(event.get("path") == mutation_path for event in alert.get("events", []))]
+    check(candidates, "missing a dry-run candidate for this process's protected-file operation after failed exec")
+print(f"[integration] {mode}: {expected_trust} failed-exec identity verified for TGID {pid}")
+PY
+}
+
+test_event_v2_write_and_exec_semantics() {
+  log "v2 syscall results and exec confirmation across all BPF transports"
+  local helper="${TMP_DIR}/evsem"
+  cc -O2 -Wall -Wextra -Werror "${ROOT_DIR}/tests/event_semantics.c" -o "${helper}"
+  local bpf_mode
+  for bpf_mode in core legacy_perf ultra_legacy_map; do
+    local dir="${TMP_DIR}/semantics-${bpf_mode}"
+    local bl="${TMP_DIR}/semantics-${bpf_mode}-blacklist.txt"
+    local policy="${TMP_DIR}/semantics-${bpf_mode}.yaml"
+    local agent_log="${TMP_DIR}/semantics-${bpf_mode}.log"
+    local manifest="${TMP_DIR}/semantics-${bpf_mode}.tsv"
+    local identity_manifest="${TMP_DIR}/semantics-${bpf_mode}-identity.tsv"
+    mkdir -p "${dir}"
+    : >"${bl}"
+    write_policy "${policy}" "semantics-${bpf_mode}" 1000 log "${dir}" "${bl}"
+    start_agent_debug "${policy}" "${agent_log}" dry-run "${bpf_mode}"
+    wait_for_log "${agent_log}" "bpf_runtime mode=${bpf_mode}" "selected semantics runtime"
+    # This helper deliberately waits between operations for the map poller.
+    timeout "$((20 * TIMEOUT_SCALE))s" "${helper}" "${dir}" >"${manifest}"
+    wait_for_log "${agent_log}" 'comm="ev-after-exec".*phase=success.*actual_bytes=13' "post-exec successful write"
+    stop_agent
+    python3 - "${agent_log}" "${manifest}" "${bpf_mode}" <<'PY'
+import csv
+import pathlib
+import re
+import shlex
+import sys
+
+logfile, manifest, mode = sys.argv[1:]
+
+def check(condition, message):
+    if not condition:
+        raise SystemExit(f"event semantics ({mode}): {message}")
+
+with pathlib.Path(manifest).open() as source:
+    rows = list(csv.reader(source, delimiter="\t"))
+fixture_pids = {int(row[2]) for row in rows}
+tgid_field = re.compile(r"(?:^| )tgid=(\d+)(?: |$)")
+events = []
+with pathlib.Path(logfile).open() as source:
+    for line in source:
+        marker = "event type="
+        if marker not in line:
+            continue
+        event_text = line[line.index(marker) + 6:]
+        match = tgid_field.search(event_text)
+        if match is None or int(match.group(1)) not in fixture_pids:
+            continue
+        fields = dict(token.split("=", 1) for token in shlex.split(event_text))
+        events.append(fields)
+
+def number(event, key):
+    check(key in event, f"missing v2 field {key}: {event}")
+    return int(event[key])
+
+write_rows = [row for row in rows if row[0] == "write"]
+check(len(write_rows) == 15, f"expected 15 controlled write cases, got {len(write_rows)}")
+concurrent = [row for row in write_rows if row[1].startswith("ev-con-")]
+check(len(concurrent) == 4 and len({row[2] for row in concurrent}) == 4, "expected four independent concurrent writer PIDs")
+check(len({row[3] for row in concurrent}) == 1, "concurrent writers must reuse the same FD number in distinct processes")
+operation_ids = set()
+for _, comm, pid, fd, syscall_id, request, vectors, result in write_rows:
+    pid, fd, syscall_id, request, vectors, result = map(int, (pid, fd, syscall_id, request, vectors, result))
+    matched = [event for event in events if event.get("type") == "write" and event.get("comm") == comm
+               and number(event, "tgid") == pid and number(event, "arg0") == fd]
+    check(len(matched) == 2, f"{comm}: expected exactly entry/exit, got {matched}")
+    attempts = [event for event in matched if event.get("phase") == "attempt"]
+    completed = [event for event in matched if event.get("phase") == ("failure" if result < 0 else "success")]
+    check(len(attempts) == 1 and len(completed) == 1, f"{comm}: incorrect phases {matched}")
+    entry, final = attempts[0], completed[0]
+    operation_id = number(entry, "operation_id")
+    check(operation_id > 0 and operation_id == number(final, "operation_id"), f"{comm}: uncorrelated operation IDs")
+    check((pid, operation_id) not in operation_ids, f"{comm}: operation ID reused within a process")
+    operation_ids.add((pid, operation_id))
+    for event in matched:
+        check(number(event, "abi") == 2, f"{comm}: not v2")
+        expected_source = "kprobe" if mode == "ultra_legacy_map" else "tracepoint"
+        check(event.get("source") == expected_source, f"{comm}: wrong source {event.get('source')}")
+        flags = number(event, "flags")
+        if mode == "ultra_legacy_map":
+            check(not flags & 8, f"{comm}: legacy kprobe must not invent a syscall ID")
+        else:
+            check(flags & 8 and number(event, "syscall_id") == syscall_id, f"{comm}: syscall ID differs from the actual host syscall")
+        if vectors:
+            check(flags & 16 and number(event, "vector_count") == vectors, f"{comm}: wrong iov count")
+            check(not flags & 2, f"{comm}: vector count must not be labeled requested bytes")
+            check(number(event, "requested_bytes") == 0, f"{comm}: unknown vector request must remain unset")
+        else:
+            check(flags & 2 and number(event, "requested_bytes") == request, f"{comm}: wrong requested bytes")
+            check(not flags & 16, f"{comm}: scalar write has vector metadata")
+    check(not number(entry, "flags") & (1 | 4), f"{comm}: attempt incorrectly claims completed I/O")
+    check(number(final, "flags") & (1 | 4) == (1 | 4), f"{comm}: completion lacks valid result/actual bytes")
+    check(number(final, "result") == result, f"{comm}: incorrect syscall result")
+    check(number(final, "actual_bytes") == max(result, 0), f"{comm}: incorrect actual bytes")
+
+failed_opens = [row for row in rows if row[0] == "open-failure"]
+check(len(failed_opens) == 1, "expected one controlled failed open")
+_, comm, pid, result, path = failed_opens[0]
+open_events = [event for event in events if event.get("type") == "open" and event.get("comm") == comm
+               and number(event, "tgid") == int(pid) and event.get("path") == path]
+check(len(open_events) == 1, f"expected one failed open result: {open_events}")
+failed_open = open_events[0]
+check(number(failed_open, "abi") == 2 and failed_open.get("phase") == "failure", "failed open must be a v2 failure")
+check(number(failed_open, "flags") & 1 and number(failed_open, "result") == int(result), "failed open lost errno result")
+
+failure = next(row for row in rows if row[0] == "exec-failure")
+target = next(row for row in rows if row[0] == "exec-target")
+_, failure_comm, pid, missing = failure
+_, target_comm, target_pid, executable = target
+check(pid == target_pid, "re-exec changed process ID")
+process_events = [event for event in events if event.get("type") == "exec" and number(event, "tgid") == int(pid)]
+failed_attempts = [i for i, event in enumerate(process_events) if event.get("comm") == failure_comm and event.get("path") == missing and event.get("phase") == "attempt"]
+target_attempts = [i for i, event in enumerate(process_events) if event.get("comm") == target_comm and event.get("path") == executable and event.get("phase") == "attempt"]
+check(len(failed_attempts) == 1 and len(target_attempts) == 1, f"missing failed/successful exec attempts: {process_events}")
+check(failed_attempts[0] < target_attempts[0], "exec attempts out of expected order")
+between = process_events[failed_attempts[0] + 1:target_attempts[0]]
+check(not any(event.get("phase") == "success" for event in between), "failed exec incorrectly emitted a success confirmation")
+if mode == "ultra_legacy_map":
+    check(not any(event.get("source") == "sched" for event in process_events), "unexpected sched capability in ultra mode")
+    print("[integration] SKIP ultra_legacy_map sched exec confirmation: transport has no sched hook; write and exec-attempt checks passed")
+else:
+    confirmations = [event for event in process_events[target_attempts[0] + 1:] if event.get("phase") == "success" and event.get("source") == "sched"]
+    check(len(confirmations) == 1, f"expected one confirmed re-exec: {confirmations}")
+    check(confirmations[0].get("comm") == pathlib.Path(executable).name[:15], "confirmed exec has wrong executable comm")
+print(f"[integration] {mode}: 15 write cases including four concurrent writers, failed open, and exec boundaries passed")
+PY
+    if [[ "${bpf_mode}" == ultra_legacy_map ]]; then
+      unsupported ultra_exec_confirmation "no sched hook; all write results and exec attempts were still verified"
+    fi
+
+    # Failed exec must not replace a trusted process's current executable path.
+    cat >"${policy}" <<YAML
+name: trusted-failed-exec-${bpf_mode}
+window: 10s
+threshold: 1
+action: kill
+protected_dirs:
+  - ${dir}
+trusted_processes:
+  - ev-trusted
+trusted_exe_paths:
+  - ${helper}
+trusted_uids:
+  - 0
+YAML
+    start_agent_debug "${policy}" "${agent_log}" dry-run "${bpf_mode}"
+    expect_survives "failed open is not a mutation ${bpf_mode}" "${helper}" --failed-open "${dir}"
+    wait_for_log "${agent_log}" 'event type=open.*comm="ev-open-fail".*phase=failure.*result=-2' "failed open result observed"
+    expect_survives "trusted failed exec ${bpf_mode}" "${helper}" --trusted-fail "${dir}" >"${identity_manifest}"
+    wait_for_log "${agent_log}" 'event type=exec.*comm="ev-trusted".*phase=attempt' "trusted failed exec attempt observed"
+    wait_for_log "${agent_log}" 'comm="ev-trusted".*phase=success.*actual_bytes=13' "trusted post-failure write observed"
+    stop_agent
+    validate_exec_identity_run "${agent_log}" "${identity_manifest}" trusted "${dir}/trusted-after-failure.data" "${bpf_mode}"
+    if grep -q 'alert=.*"comm":"ev-open-fail"' "${agent_log}"; then
+      fail "${bpf_mode}: failed open or unmapped-FD failure changed detection state; legacy write attempts remain scored"
+    fi
+
+    local trusted_target="${dir}/trusted-not-executable"
+    printf 'non-executable trusted target\n' >"${trusted_target}"
+    chmod 0644 "${trusted_target}"
+    cat >"${policy}" <<YAML
+name: spoofed-failed-exec-${bpf_mode}
+window: 10s
+threshold: 1
+action: kill
+protected_dirs:
+  - ${dir}
+trusted_processes:
+  - ev-spoof
+trusted_exe_paths:
+  - ${trusted_target}
+trusted_uids:
+  - 0
+YAML
+    start_agent_debug "${policy}" "${agent_log}" dry-run "${bpf_mode}"
+    expect_survives "untrusted failed exec dry-run ${bpf_mode}" "${helper}" --spoof-trusted "${dir}" >"${identity_manifest}"
+    wait_for_log "${agent_log}" 'event type=exec.*comm="ev-spoof".*phase=attempt' "untrusted exec attempt observed"
+    wait_for_log "${agent_log}" 'alert=.*"dry_run":true.*"comm":"ev-spoof"' "failed exec cannot grant trusted identity"
+    stop_agent
+    validate_exec_identity_run "${agent_log}" "${identity_manifest}" untrusted "${dir}/spoof-after-failure.data" "${bpf_mode}"
+  done
 }
 
 test_bpf_ioc_policy_sync_and_scope() {
@@ -274,17 +651,33 @@ scores:
 YAML
   start_agent "${policy}" "${agent_log}" dry-run
   wait_for_log "${agent_log}" 'synced_bpf_policy ioc_extensions=1 ransom_notes=1 protected_dirs=1' "BPF IOC policy sync"
-  wait_for_log "${agent_log}" 'attached override kprobe op=openat symbol=' "architecture-aware kprobe attach"
   wait_for_log "${agent_log}" 'bpf_lsm attached=' "optional BPF LSM summary"
+  if grep -q 'bpf_runtime mode=core' "${agent_log}"; then
+    wait_for_log "${agent_log}" 'synced_bpf_enforcement inline_ioc_action=observe dry_run=true' "dry-run BPF enforcement sync"
+    wait_for_log "${agent_log}" 'bpf_capabilities mode=core' "core collection independent from optional enforcement"
+  else
+    wait_for_log "${agent_log}" 'synced_bpf_enforcement inline_ioc_action=unavailable requested=observe dry_run=true' "legacy BPF enforcement capability"
+    log "non-core runtime selected; override kprobe attach remains optional"
+  fi
 
-  if bpf_lsm_active; then
-    expect_survives "unprotected suspicious extension scoped out" python3 - <<PY
+  expect_survives "unprotected suspicious extension scoped out" python3 - <<PY
 with open("${outside}/note.vaultx", "w") as f:
     f.write("outside")
 PY
+  expect_survives "dry-run protected suspicious extension" python3 - <<PY
+with open("${dir}/dry-run.vaultx", "w") as f:
+    f.write("observed")
+PY
+  wait_for_log "${agent_log}" 'protected suspicious extension write' "dry-run protected IOC alert"
+
+  if bpf_lsm_active && bpf_lsm_attached "${agent_log}"; then
+    stop_agent
+    write_policy "${policy}" bpf-ioc-sync-test 45 deny "${dir}" "${bl}"
+    start_agent "${policy}" "${agent_log}" enforce
+    wait_for_log "${agent_log}" 'synced_bpf_enforcement inline_ioc_action=deny dry_run=false' "deny BPF enforcement sync"
     set +e
     python3 - <<PY
-with open("${dir}/note.vaultx", "w") as f:
+with open("${dir}/denied.locked", "w") as f:
     f.write("protected")
 PY
     local rc=$?
@@ -292,9 +685,11 @@ PY
     if [[ "${rc}" -eq 0 ]]; then
       fail "protected suspicious extension: expected BPF LSM denial"
     fi
+    wait_for_log "${agent_log}" 'blocked inline_ioc op=open' "BPF LSM inline IOC audit"
+    wait_for_log "${agent_log}" '"action":"deny"' "BPF LSM structured deny alert"
   else
     wait_for_log "${agent_log}" 'bpf_lsm attached=0 skipped=' "BPF LSM optional fallback"
-    log "BPF LSM not active; hard-deny scope check skipped"
+    unsupported lsm_inline_ioc "BPF LSM not active; hard-deny scope check not executed"
   fi
   stop_agent
 }
@@ -369,6 +764,34 @@ print("survived")
 PY
   expect_survives "dry-run" python3 "${sim}"
   wait_for_log "${agent_log}" '"dry_run":true' "dry-run"
+  stop_agent
+}
+
+test_log_action_ioc_survives() {
+  log "log action observes protected IOC without enforcing"
+  local dir="${TMP_DIR}/log-ioc"
+  local bl="${TMP_DIR}/log-ioc-blacklist.txt"
+  local policy="${TMP_DIR}/log-ioc.yaml"
+  local agent_log="${TMP_DIR}/log-ioc-agent.log"
+  local sim="${TMP_DIR}/log-ioc.py"
+  mkdir -p "${dir}"
+  : >"${bl}"
+  write_policy "${policy}" log-ioc-test 45 log "${dir}" "${bl}"
+  start_agent "${policy}" "${agent_log}" enforce
+  cat >"${sim}" <<PY
+import time
+with open("${dir}/observed.locked", "w") as f:
+    f.write("observed")
+time.sleep(1)
+print("survived")
+PY
+  expect_survives "log action IOC" python3 "${sim}"
+  if grep -q 'bpf_runtime mode=core' "${agent_log}"; then
+    wait_for_log "${agent_log}" 'synced_bpf_enforcement inline_ioc_action=observe dry_run=false' "log-only BPF enforcement sync"
+  else
+    wait_for_log "${agent_log}" 'synced_bpf_enforcement inline_ioc_action=unavailable requested=observe dry_run=false' "legacy log-only enforcement capability"
+  fi
+  wait_for_log "${agent_log}" '"action":"log"' "log action IOC alert"
   stop_agent
 }
 
@@ -452,6 +875,9 @@ PY
 
 test_feature_rule_distinct_paths_blocks() {
   log "rules DSL block action denies no-rename fanout by distinct_paths"
+  if ! require_deny_openat; then
+    return
+  fi
   local dir="${TMP_DIR}/rule-block"
   local bl="${TMP_DIR}/rule-block-blacklist.txt"
   local policy="${TMP_DIR}/rule-block.yaml"
@@ -724,7 +1150,7 @@ C
   local rc=$?
   set -e
   if [[ "${rc}" -eq 77 ]]; then
-    log "io_uring unsupported or blocked by kernel policy; scoring check skipped"
+    unsupported io_uring "unsupported or blocked by kernel policy; scoring check not executed"
     stop_agent
     return
   fi
@@ -830,7 +1256,7 @@ PY
   local rc=$?
   set -e
   if [[ "${rc}" -eq 77 ]]; then
-    log "IPv6 loopback unavailable; IPv6 network egress check skipped"
+    unsupported ipv6_loopback "IPv6 network egress check not executed"
     stop_agent
     return
   fi
@@ -905,7 +1331,10 @@ PY
 }
 
 test_deny_override_rejects_marked_syscall() {
-  log "deny action uses bpf_override_return for marked syscalls"
+  log "deny action rejects marked openat through an actually attached denial hook"
+  if ! require_deny_openat; then
+    return
+  fi
   local dir="${TMP_DIR}/deny-override"
   local bl="${TMP_DIR}/deny-override-blacklist.txt"
   local policy="${TMP_DIR}/deny-override.yaml"
@@ -1452,6 +1881,9 @@ test_hash_blacklist_hot_scan_kills() {
 
 test_blocked_lineage_exec_kills_child() {
   log "blocked lineage exec kills child process"
+  if ! require_deny_openat; then
+    return
+  fi
   local dir="${TMP_DIR}/lineage"
   local bl="${TMP_DIR}/lineage-blacklist.txt"
   local policy="${TMP_DIR}/lineage.yaml"
@@ -1510,7 +1942,7 @@ PY
 test_rsync_trusted_false_positive_survives() {
   log "trusted rsync bulk copy does not alert or kill"
   command -v rsync >/dev/null || {
-    log "rsync missing; trusted rsync false-positive check skipped"
+    unsupported rsync "tool missing; trusted rsync false-positive check not executed"
     return
   }
   local dir="${TMP_DIR}/rsync-fp"
@@ -1577,7 +2009,7 @@ YAML
 test_make_workload_false_positive_survives() {
   log "make workload in protected dir stays below behavior threshold"
   command -v make >/dev/null || {
-    log "make missing; make workload false-positive check skipped"
+    unsupported make "tool missing; make workload false-positive check not executed"
     return
   }
   local dir="${TMP_DIR}/make-fp"
@@ -1609,7 +2041,7 @@ MK
 test_trusted_tar_extract_false_positive_survives() {
   log "trusted tar extract into protected dir does not alert or kill"
   command -v tar >/dev/null || {
-    log "tar missing; trusted tar false-positive check skipped"
+    unsupported tar "tool missing; trusted tar false-positive check not executed"
     return
   }
   local dir="${TMP_DIR}/tar-fp"
@@ -1804,47 +2236,96 @@ PY
 }
 
 main() {
+  local tests=(
+    test_event_v2_write_and_exec_semantics
+    test_deny_capability_contract
+    test_bpf_ioc_policy_sync_and_scope
+    test_dry_run_survives
+    test_log_action_ioc_survives
+    test_behavior_threshold_kills
+    test_ransomware_simulator_suffix_rename_kills
+    test_feature_rule_distinct_paths_kills
+    test_feature_rule_distinct_paths_blocks
+    test_multi_config_merges_protected_dirs
+    test_cgroup_scope_filters_events
+    test_getdents64_scan_scores_and_kills
+    test_writable_mmap_scores_and_kills
+    test_io_uring_after_protected_activity_scores
+    test_network_egress_after_file_activity_scores
+    test_network_egress_ipv6_after_file_activity_scores
+    test_systemd_watchdog_notify
+    test_deny_override_rejects_marked_syscall
+    test_fd_write_path_scoring_kills
+    test_fd_lifecycle_tracking
+    test_relative_dirfd_path_scoring_kills
+    test_copy_file_range_scoring_kills
+    test_trusted_comm_spoof_not_bypassed
+    test_trusted_backup_destroy_still_kills
+    test_immediate_rename_ioc_kills
+    test_ransom_note_kills
+    test_unlink_and_truncate_kill
+    test_link_and_symlink_kill
+    test_legacy_perf_mode_core_write_kills
+    test_ultra_legacy_map_mode_core_write_kills
+    test_hash_blacklist_exec_kills
+    test_hash_blacklist_hot_scan_kills
+    test_blocked_lineage_exec_kills_child
+    test_exec_after_blocked_scores_in_dry_run
+    test_rsync_trusted_false_positive_survives
+    test_make_workload_false_positive_survives
+    test_trusted_tar_extract_false_positive_survives
+    test_self_protect_path_kills_even_when_trusted
+    test_self_protect_link_kills_even_when_trusted
+  )
+  local selected=()
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --list)
+        printf '%s\n' "${tests[@]}"
+        return
+        ;;
+      --only)
+        [[ "$#" -ge 2 ]] || fail "--only requires an exact test name"
+        local found=false
+        local candidate
+        for candidate in "${tests[@]}"; do
+          if [[ "$candidate" == "$2" ]]; then found=true; break; fi
+        done
+        [[ "${found}" == true ]] || fail "unknown test $2; use --list"
+        selected+=("$2")
+        shift 2
+        ;;
+      *) fail "unknown argument $1; use --list or --only TEST" ;;
+    esac
+  done
+  [[ "${EUID}" -eq 0 ]] || fail "integration tests must run as root"
+  [[ "${TIMEOUT_SCALE}" =~ ^[1-9][0-9]*$ ]] || fail "EBPFFLS_TEST_TIMEOUT_SCALE must be a positive integer"
+  local temporary_parent="${EBPFFLS_INTEGRATION_TMP_PARENT:-/tmp}"
+  [[ "${temporary_parent}" == /* && -d "${temporary_parent}" ]] || fail "integration temp parent must be an existing absolute directory"
+  TMP_DIR="$(mktemp -d "${temporary_parent}/ebpffls-it.XXXXXX")"
+  if [[ -n "${RESULTS_FILE}" ]]; then
+    printf 'test\tstatus\tdetail\n' >"${RESULTS_FILE}"
+  fi
+  if [[ "${#selected[@]}" -eq 0 ]]; then selected=("${tests[@]}"); fi
+  CURRENT_TEST=setup
   command -v cc >/dev/null || fail "cc is required for integration tests"
   [[ -x "${BIN}" ]] || fail "missing binary ${BIN}; run make build first"
   build_badloop
   build_spoof
-  test_bpf_ioc_policy_sync_and_scope
-  test_dry_run_survives
-  test_behavior_threshold_kills
-  test_ransomware_simulator_suffix_rename_kills
-  test_feature_rule_distinct_paths_kills
-  test_feature_rule_distinct_paths_blocks
-  test_multi_config_merges_protected_dirs
-  test_cgroup_scope_filters_events
-  test_getdents64_scan_scores_and_kills
-  test_writable_mmap_scores_and_kills
-  test_io_uring_after_protected_activity_scores
-  test_network_egress_after_file_activity_scores
-  test_network_egress_ipv6_after_file_activity_scores
-  test_systemd_watchdog_notify
-  test_deny_override_rejects_marked_syscall
-  test_fd_write_path_scoring_kills
-  test_fd_lifecycle_tracking
-  test_relative_dirfd_path_scoring_kills
-  test_copy_file_range_scoring_kills
-  test_trusted_comm_spoof_not_bypassed
-  test_trusted_backup_destroy_still_kills
-  test_immediate_rename_ioc_kills
-  test_ransom_note_kills
-  test_unlink_and_truncate_kill
-  test_link_and_symlink_kill
-  test_legacy_perf_mode_core_write_kills
-  test_ultra_legacy_map_mode_core_write_kills
-  test_hash_blacklist_exec_kills
-  test_hash_blacklist_hot_scan_kills
-  test_blocked_lineage_exec_kills_child
-  test_exec_after_blocked_scores_in_dry_run
-  test_rsync_trusted_false_positive_survives
-  test_make_workload_false_positive_survives
-  test_trusted_tar_extract_false_positive_survives
-  test_self_protect_path_kills_even_when_trusted
-  test_self_protect_link_kills_even_when_trusted
-  log "all integration tests passed"
+  local test_name
+  for test_name in "${selected[@]}"; do
+    CURRENT_TEST="${test_name}"
+    CURRENT_TEST_UNSUPPORTED=0
+    record_result RUNNING "${test_name}"
+    "${test_name}"
+    if [[ "${CURRENT_TEST_UNSUPPORTED}" == 1 ]]; then
+      record_result PASS_WITH_UNSUPPORTED "${test_name}" "see component outcomes; unsupported checks are not passes"
+    else
+      record_result PASS "${test_name}"
+    fi
+  done
+  CURRENT_TEST=""
+  log "integration completed tests=${#selected[@]} unsupported_components=${UNSUPPORTED_COUNT}"
 }
 
 main "$@"

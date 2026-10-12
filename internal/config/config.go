@@ -1,7 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -98,7 +100,9 @@ func loadOne(path string) (Policy, error) {
 		return Policy{}, fmt.Errorf("read config: %w", err)
 	}
 	var p Policy
-	if err := yaml.Unmarshal(data, &p); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&p); err != nil {
 		return Policy{}, fmt.Errorf("parse config: %w", err)
 	}
 	return p, nil
@@ -113,6 +117,9 @@ func normalize(p Policy) (Policy, error) {
 	if err != nil {
 		return Policy{}, fmt.Errorf("parse window: %w", err)
 	}
+	if p.Window <= 0 {
+		return Policy{}, fmt.Errorf("window must be greater than zero")
+	}
 	if p.BlockTTLRaw == "" {
 		p.BlockTTLRaw = "10m"
 	}
@@ -120,19 +127,33 @@ func normalize(p Policy) (Policy, error) {
 	if err != nil {
 		return Policy{}, fmt.Errorf("parse block_ttl: %w", err)
 	}
+	if p.BlockTTL < 0 {
+		return Policy{}, fmt.Errorf("block_ttl must not be negative")
+	}
 	if p.Threshold == 0 {
 		p.Threshold = 45
+	}
+	if p.Threshold < 0 {
+		return Policy{}, fmt.Errorf("threshold must not be negative")
 	}
 	if p.Action == "" {
 		p.Action = "log"
 	}
-	p.Action = strings.ToLower(p.Action)
+	p.Action = strings.ToLower(strings.TrimSpace(p.Action))
+	switch p.Action {
+	case "log", "deny", "kill":
+	default:
+		return Policy{}, fmt.Errorf("unsupported action %q; use log, deny, or kill", p.Action)
+	}
 	if p.BlacklistScanRaw == "" {
 		p.BlacklistScanRaw = "5s"
 	}
 	p.BlacklistScan, err = time.ParseDuration(p.BlacklistScanRaw)
 	if err != nil {
 		return Policy{}, fmt.Errorf("parse blacklist_scan: %w", err)
+	}
+	if p.BlacklistScan < 0 {
+		return Policy{}, fmt.Errorf("blacklist_scan must not be negative")
 	}
 	if p.Scores.Write == 0 {
 		p.Scores.Write = 1
@@ -179,6 +200,31 @@ func normalize(p Policy) (Policy, error) {
 	if p.NetworkEgress.Score == 0 {
 		p.NetworkEgress.Score = p.Scores.NetworkEgress
 	}
+	for i, cidr := range p.NetworkEgress.AllowedCIDR {
+		cidr = strings.TrimSpace(cidr)
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return Policy{}, fmt.Errorf("invalid network_egress allowed CIDR %q: %w", cidr, err)
+		}
+		p.NetworkEgress.AllowedCIDR[i] = cidr
+	}
+	for _, port := range p.NetworkEgress.AllowedPort {
+		if port < 1 || port > 65535 {
+			return Policy{}, fmt.Errorf("network_egress allowed port %d must be between 1 and 65535", port)
+		}
+	}
+	if err := validateScores(p.Scores, p.NetworkEgress.Score); err != nil {
+		return Policy{}, err
+	}
+	for i, extension := range p.SuspiciousExtensions {
+		extension = strings.TrimSpace(strings.ToLower(extension))
+		if extension != "" && !strings.HasPrefix(extension, ".") {
+			extension = "." + extension
+		}
+		p.SuspiciousExtensions[i] = extension
+	}
+	for i, name := range p.RansomNoteNames {
+		p.RansomNoteNames[i] = strings.TrimSpace(name)
+	}
 	for i := range p.Rules {
 		r := &p.Rules[i]
 		r.Feature = strings.ToLower(strings.TrimSpace(r.Feature))
@@ -198,6 +244,31 @@ func normalize(p Policy) (Policy, error) {
 		}
 	}
 	return p, nil
+}
+
+func validateScores(scores Scores, networkScore int) error {
+	values := map[string]int{
+		"write":                scores.Write,
+		"truncate":             scores.Truncate,
+		"rename":               scores.Rename,
+		"unlink":               scores.Unlink,
+		"self_protect":         scores.SelfProtect,
+		"suspicious_extension": scores.SuspiciousExtension,
+		"ransom_note":          scores.RansomNote,
+		"backup_destroy":       scores.BackupDestroy,
+		"high_rate_bonus":      scores.HighRateBonus,
+		"exec_after_blocked":   scores.ExecAfterBlocked,
+		"scan":                 scores.Scan,
+		"mmap":                 scores.Mmap,
+		"io_uring":             scores.IOUring,
+		"network_egress":       networkScore,
+	}
+	for name, value := range values {
+		if value < 0 {
+			return fmt.Errorf("score %s must not be negative", name)
+		}
+	}
+	return nil
 }
 
 func mergePolicies(policies []Policy) Policy {

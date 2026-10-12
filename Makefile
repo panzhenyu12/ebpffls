@@ -1,7 +1,7 @@
 BINARY ?= ebpffls
 GO ?= go
 
-.PHONY: all generate build test integration-test clean bpftool
+.PHONY: all generate build test integration-test docker-integration-test clean bpftool
 
 all: build
 
@@ -18,12 +18,15 @@ generate:
 build:
 	$(GO) build -o bin/$(BINARY) ./cmd/ebpffls
 
-test: generate
+test:
 	$(GO) test ./...
 	bash tests/systemd_unit.sh
 
 integration-test: build test
 	bash tests/integration.sh
+
+docker-integration-test:
+	bash tests/docker_integration.sh
 
 clean:
 	rm -rf bin

@@ -67,6 +67,24 @@ Run Linux/root integration tests:
 sudo make integration-test
 ```
 
+Run the same suite in a privileged Linux Docker container (also on macOS):
+
+```bash
+make docker-integration-test
+```
+
+This rebuilds the embedded BPF objects and the Linux binary in the workspace.
+It reuses the Docker build cache and the named Go cache volumes
+`ebpffls-go-build` and `ebpffls-go-mod`, and removes the test container on exit.
+Docker uses its VM/host kernel; privileged mode cannot enable missing kernel
+features. The suite reports unsupported capabilities instead of treating skips
+as passes.
+
+The test container uses `--pid=host` so eBPF TGIDs, `/proc` lookups and test
+process IDs refer to the same Linux PID namespace. On Docker Desktop this is
+the Linux VM, not the macOS process namespace. An isolated PID namespace is not
+supported by the current agent's procfs lookup and enforcement paths.
+
 The integration suite includes `tests/ransomware_sim.py`, a small reusable
 ransomware-like workload simulator used to exercise fanout writes, suspicious
 suffix renames, and ransom-note creation paths.
@@ -133,9 +151,10 @@ sudo systemctl enable --now ebpffls
 The BPF sensor counts ring buffer reserve failures in a map, and the agent logs
 `ringbuf_drops total=<n> delta=<n>` when drops increase.
 
-At startup, the agent syncs `suspicious_extensions`, `ransom_note_names`, and
-existing `protected_dirs` into BPF maps for scoped LSM IOC enforcement when BPF
-LSM is active.
+At startup, the agent syncs `suspicious_extensions`, `ransom_note_names`,
+existing `protected_dirs`, and the effective enforcement mode into BPF maps.
+Dry-run and `action: log` set the inline IOC action to observe-only; `deny` and
+`kill` enable scoped LSM enforcement when BPF LSM is active.
 
 ## Policy model (behavior track)
 
@@ -161,9 +180,9 @@ Enforcement then applies via kprobes, and via LSM as well when `bpf` is active.
 
 | Action | Effect |
 |--------|--------|
-| `log` | JSON alert only |
-| `deny` | kprobe `bpf_override_return(-EPERM)` rejects marked syscalls when supported; BPF LSM also returns `-EPERM` when active |
-| `kill` | userspace signals the process; modern kprobe/LSM paths add kernel-side kill when supported |
+| `log` | JSON alert only; inline IOC LSM checks observe without rejecting |
+| `deny` | kprobe `bpf_override_return(-EPERM)` rejects marked syscalls when supported; BPF LSM rejects scoped inline IOCs and emits a structured audit event when active |
+| `kill` | userspace signals the process; modern kprobe/LSM paths add kernel-side kill and a structured audit event when supported |
 
 ## Hash blacklist
 
@@ -210,6 +229,9 @@ destruction scoring under `backup_dirs`.
 | [docs/strategy.md](docs/strategy.md) | Architecture and response levels |
 | [docs/ransomware-call-abstraction.md](docs/ransomware-call-abstraction.md) | Ransomware syscall / semantic abstraction |
 | [docs/kernel-compatibility.md](docs/kernel-compatibility.md) | One-build kernel compatibility and CO-RE/legacy plan |
+| [docs/ebpf-ml-security-research.md](docs/ebpf-ml-security-research.md) | eBPF/ML runtime security strategy and reproducibility review |
+| [docs/adaptive-detection-plan.md](docs/adaptive-detection-plan.md) | Contextual detection backlog, compatibility, and evaluation gates |
+| [docs/event-abi.md](docs/event-abi.md) | Event v2 semantics, replay baseline, and implementation limits |
 | [docs/roadmap.md](docs/roadmap.md) | Development plan |
 | [docs/review-consolidated.md](docs/review-consolidated.md) | Code + doc review notes |
 

@@ -44,6 +44,13 @@ struct {
 } ringbuf_drops SEC(".maps");
 
 struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, __u64);
+} capture_gaps SEC(".maps");
+
+struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 16384);
 	__type(key, __u32);
@@ -72,6 +79,13 @@ struct {
 } protected_dirs SEC(".maps");
 
 struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, __u32);
+} inline_ioc_action SEC(".maps");
+
+struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 1024);
 	__type(key, __u64);
@@ -96,6 +110,14 @@ struct pending_dup {
 	__s32 newfd;
 };
 
+struct pending_write {
+	__u64 operation_id;
+	__u64 size;
+	__s64 syscall_id;
+	__s32 fd;
+	__u32 vector;
+};
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 16384);
@@ -109,6 +131,13 @@ struct {
 	__type(key, __u64);
 	__type(value, struct pending_dup);
 } pending_dups SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 16384);
+	__type(key, __u64);
+	__type(value, struct pending_write);
+} pending_writes SEC(".maps");
 
 static __always_inline __u32 current_ppid(void)
 {
@@ -124,6 +153,15 @@ static __always_inline void count_ringbuf_drop(void)
 
 	if (drops)
 		__sync_fetch_and_add(drops, 1);
+}
+
+static __always_inline void count_capture_gap(void)
+{
+	__u32 key = 0;
+	__u64 *gaps = bpf_map_lookup_elem(&capture_gaps, &key);
+
+	if (gaps)
+		__sync_fetch_and_add(gaps, 1);
 }
 
 static __always_inline int cgroup_in_scope(void)
@@ -171,6 +209,17 @@ static __always_inline struct event *new_event(__u32 type)
 	e->arg0 = 0;
 	e->arg1 = 0;
 	e->size = 0;
+	e->version = EVENT_VERSION;
+	e->phase = EVENT_PHASE_ATTEMPT;
+	e->source = EVENT_SOURCE_TRACEPOINT;
+	e->flags = 0;
+	e->syscall_id = 0;
+	e->result = 0;
+	e->operation_id = 0;
+	e->requested_bytes = 0;
+	e->actual_bytes = 0;
+	e->vector_count = 0;
+	e->reserved = 0;
 	__builtin_memset(e->path, 0, sizeof(e->path));
 	__builtin_memset(e->path2, 0, sizeof(e->path2));
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
@@ -226,6 +275,15 @@ static __always_inline __u16 ntohs16(__u16 value)
 	return (value >> 8) | (value << 8);
 }
 
+static __always_inline __u64 user_device_id(__u32 dev)
+{
+	__u32 major = dev >> 20;
+	__u32 minor = dev & ((1U << 20) - 1);
+
+	// Match Linux stat(2), not the kernel-internal major/minor packing.
+	return (minor & 0xff) | (major << 8) | ((minor & ~0xffU) << 12);
+}
+
 static __always_inline int protected_path(const struct path *path)
 {
 	struct dentry *dentry = BPF_CORE_READ(path, dentry);
@@ -242,7 +300,7 @@ static __always_inline int protected_path(const struct path *path)
 		if (inode) {
 			sb = BPF_CORE_READ(inode, i_sb);
 			if (sb)
-				key.dev = BPF_CORE_READ(sb, s_dev);
+				key.dev = user_device_id(BPF_CORE_READ(sb, s_dev));
 			key.ino = BPF_CORE_READ(inode, i_ino);
 			if (bpf_map_lookup_elem(&protected_dirs, &key))
 				return 1;
@@ -303,15 +361,55 @@ static __always_inline int suspicious_path_dentry(const struct path *path, struc
 	return cgroup_in_scope() && protected_path(path) && suspicious_dentry(dentry);
 }
 
+static __always_inline __u32 configured_inline_ioc_action(void)
+{
+	__u32 key = 0;
+	__u32 *action = bpf_map_lookup_elem(&inline_ioc_action, &key);
+
+	return action ? *action : 0;
+}
+
 static __always_inline void emit_block_event(__u32 op, const char *path)
 {
 	struct event *e = new_event(EVENT_BLOCK);
 	if (!e)
 		return;
 	e->arg0 = op;
+	e->phase = EVENT_PHASE_BLOCKED;
+	e->source = EVENT_SOURCE_LSM;
+	e->flags = EVENT_RESULT_VALID;
+	e->result = -EPERM;
 	if (path)
 		bpf_probe_read_kernel_str(e->path, sizeof(e->path), path);
 	bpf_ringbuf_submit(e, 0);
+}
+
+static __always_inline int enforce_inline_ioc(__u32 op, struct dentry *dentry)
+{
+	__u32 action = configured_inline_ioc_action();
+	struct event *e;
+
+	if (action != BLOCK_ACTION_DENY && action != BLOCK_ACTION_KILL)
+		return 0;
+
+	e = new_event(EVENT_BLOCK);
+	if (e) {
+		const unsigned char *dname = BPF_CORE_READ(dentry, d_name.name);
+
+		e->arg0 = op;
+		e->phase = EVENT_PHASE_BLOCKED;
+		e->source = EVENT_SOURCE_LSM;
+		e->flags = EVENT_RESULT_VALID;
+		e->result = -EPERM;
+		e->arg1 = action;
+		e->size = BLOCK_REASON_INLINE_IOC;
+		if (dname)
+			bpf_probe_read_kernel_str(e->path, sizeof(e->path), dname);
+		bpf_ringbuf_submit(e, 0);
+	}
+	if (action == BLOCK_ACTION_KILL)
+		bpf_send_signal(SIGKILL);
+	return -EPERM;
 }
 
 SEC("tracepoint/syscalls/sys_enter_execve")
@@ -322,8 +420,35 @@ int trace_execve(struct trace_event_raw_sys_enter *ctx)
 		return 0;
 
 	const char *filename = (const char *)ctx->args[0];
+	e->syscall_id = ctx->id;
+	e->flags = EVENT_SYSCALL_ID_VALID;
 	bpf_probe_read_user_str(e->path, sizeof(e->path), filename);
 	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("tracepoint/sched/sched_process_exec")
+int trace_exec_success(void *ctx)
+{
+	struct event *e = new_event(EVENT_EXEC);
+	if (!e)
+		return 0;
+	e->phase = EVENT_PHASE_SUCCESS;
+	e->source = EVENT_SOURCE_SCHED;
+	bpf_ringbuf_submit(e, 0);
+	return 0;
+}
+
+SEC("tracepoint/sched/sched_process_exit")
+int trace_process_exit(void *ctx)
+{
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+
+	if (bpf_map_lookup_elem(&pending_writes, &pid_tgid))
+		count_capture_gap();
+	bpf_map_delete_elem(&pending_writes, &pid_tgid);
+	bpf_map_delete_elem(&pending_opens, &pid_tgid);
+	bpf_map_delete_elem(&pending_dups, &pid_tgid);
 	return 0;
 }
 
@@ -454,10 +579,12 @@ int kp_override_io_uring_enter(struct pt_regs *ctx)
 }
 
 SEC("lsm/file_open")
-int BPF_PROG(enforce_file_open, struct file *file)
+int BPF_PROG(enforce_file_open, struct file *file, int ret)
 {
 	struct block_entry *entry;
 
+	if (ret)
+		return ret;
 	int flags = BPF_CORE_READ(file, f_flags);
 	if ((flags & O_TRUNC) || ((flags & O_ACCMODE) == O_WRONLY) || ((flags & O_ACCMODE) == O_RDWR)) {
 		entry = current_block_entry();
@@ -470,10 +597,12 @@ int BPF_PROG(enforce_file_open, struct file *file)
 }
 
 SEC("lsm/file_permission")
-int BPF_PROG(enforce_file_permission, struct file *file, int mask)
+int BPF_PROG(enforce_file_permission, struct file *file, int mask, int ret)
 {
 	struct block_entry *entry;
 
+	if (ret)
+		return ret;
 	entry = current_block_entry();
 	if ((mask & MAY_WRITE) && entry) {
 		emit_block_event(EVENT_WRITE, 0);
@@ -483,10 +612,12 @@ int BPF_PROG(enforce_file_permission, struct file *file, int mask)
 }
 
 SEC("lsm/path_truncate")
-int BPF_PROG(enforce_path_truncate, const struct path *path)
+int BPF_PROG(enforce_path_truncate, const struct path *path, int ret)
 {
 	struct block_entry *entry;
 
+	if (ret)
+		return ret;
 	entry = current_block_entry();
 	if (entry) {
 		emit_block_event(EVENT_TRUNCATE, 0);
@@ -495,15 +626,17 @@ int BPF_PROG(enforce_path_truncate, const struct path *path)
 	return 0;
 }
 
-SEC("lsm/path_rename")
-int BPF_PROG(enforce_path_rename, const struct path *old_dir, struct dentry *old_dentry,
-	     const struct path *new_dir, struct dentry *new_dentry, unsigned int flags)
+static __always_inline int enforce_path_rename_common(const struct path *new_dir,
+						    struct dentry *new_dentry, int ret)
 {
 	struct block_entry *entry;
 
+	if (ret)
+		return ret;
 	if (suspicious_path_dentry(new_dir, new_dentry)) {
-		emit_block_event(EVENT_RENAME, 0);
-		return -EPERM;
+		int verdict = enforce_inline_ioc(EVENT_RENAME, new_dentry);
+		if (verdict)
+			return verdict;
 	}
 	entry = current_block_entry();
 	if (entry) {
@@ -513,12 +646,29 @@ int BPF_PROG(enforce_path_rename, const struct path *old_dir, struct dentry *old
 	return 0;
 }
 
+SEC("lsm/path_rename")
+int BPF_PROG(enforce_path_rename, const struct path *old_dir, struct dentry *old_dentry,
+	     const struct path *new_dir, struct dentry *new_dentry, unsigned int flags, int ret)
+{
+	return enforce_path_rename_common(new_dir, new_dentry, ret);
+}
+
+// Linux 5.15 has no flags argument; the loader selects using target BTF.
+SEC("lsm/path_rename")
+int BPF_PROG(enforce_path_rename_legacy, const struct path *old_dir, struct dentry *old_dentry,
+	     const struct path *new_dir, struct dentry *new_dentry, int ret)
+{
+	return enforce_path_rename_common(new_dir, new_dentry, ret);
+}
+
 SEC("lsm/inode_rename")
 int BPF_PROG(enforce_inode_rename, struct inode *old_dir, struct dentry *old_dentry,
-	     struct inode *new_dir, struct dentry *new_dentry)
+	     struct inode *new_dir, struct dentry *new_dentry, int ret)
 {
 	struct block_entry *entry;
 
+	if (ret)
+		return ret;
 	entry = current_block_entry();
 	if (entry) {
 		emit_block_event(EVENT_RENAME, 0);
@@ -528,13 +678,16 @@ int BPF_PROG(enforce_inode_rename, struct inode *old_dir, struct dentry *old_den
 }
 
 SEC("lsm/path_mknod")
-int BPF_PROG(enforce_path_mknod, const struct path *dir, struct dentry *dentry, umode_t mode, unsigned int dev)
+int BPF_PROG(enforce_path_mknod, const struct path *dir, struct dentry *dentry, umode_t mode, unsigned int dev, int ret)
 {
 	struct block_entry *entry;
 
+	if (ret)
+		return ret;
 	if (suspicious_path_dentry(dir, dentry)) {
-		emit_block_event(EVENT_OPEN, 0);
-		return -EPERM;
+		int verdict = enforce_inline_ioc(EVENT_OPEN, dentry);
+		if (verdict)
+			return verdict;
 	}
 	entry = current_block_entry();
 	if (entry) {
@@ -545,10 +698,12 @@ int BPF_PROG(enforce_path_mknod, const struct path *dir, struct dentry *dentry, 
 }
 
 SEC("lsm/inode_create")
-int BPF_PROG(enforce_inode_create, struct inode *dir, struct dentry *dentry, umode_t mode)
+int BPF_PROG(enforce_inode_create, struct inode *dir, struct dentry *dentry, umode_t mode, int ret)
 {
 	struct block_entry *entry;
 
+	if (ret)
+		return ret;
 	entry = current_block_entry();
 	if (entry) {
 		emit_block_event(EVENT_OPEN, 0);
@@ -558,13 +713,16 @@ int BPF_PROG(enforce_inode_create, struct inode *dir, struct dentry *dentry, umo
 }
 
 SEC("lsm/path_unlink")
-int BPF_PROG(enforce_path_unlink, const struct path *dir, struct dentry *dentry)
+int BPF_PROG(enforce_path_unlink, const struct path *dir, struct dentry *dentry, int ret)
 {
 	struct block_entry *entry;
 
+	if (ret)
+		return ret;
 	if (suspicious_path_dentry(dir, dentry)) {
-		emit_block_event(EVENT_UNLINK, 0);
-		return -EPERM;
+		int verdict = enforce_inline_ioc(EVENT_UNLINK, dentry);
+		if (verdict)
+			return verdict;
 	}
 	entry = current_block_entry();
 	if (entry) {
@@ -575,10 +733,12 @@ int BPF_PROG(enforce_path_unlink, const struct path *dir, struct dentry *dentry)
 }
 
 SEC("lsm/bprm_check_security")
-int BPF_PROG(enforce_bprm_check_security, struct linux_binprm *bprm)
+int BPF_PROG(enforce_bprm_check_security, struct linux_binprm *bprm, int ret)
 {
 	struct block_entry *entry;
 
+	if (ret)
+		return ret;
 	entry = current_block_entry();
 	if (entry) {
 		emit_block_event(EVENT_EXEC, 0);
@@ -604,8 +764,7 @@ int trace_openat(struct trace_event_raw_sys_enter *ctx)
 	return 0;
 }
 
-SEC("tracepoint/syscalls/sys_exit_openat")
-int trace_openat_exit(struct trace_event_raw_sys_exit *ctx)
+static __always_inline int complete_open(struct trace_event_raw_sys_exit *ctx)
 {
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 	struct pending_open *pending = bpf_map_lookup_elem(&pending_opens, &pid_tgid);
@@ -613,18 +772,26 @@ int trace_openat_exit(struct trace_event_raw_sys_exit *ctx)
 		return 0;
 
 	int fd = (int)ctx->ret;
-	if (fd >= 0) {
-		struct event *e = new_event(EVENT_OPEN);
-		if (e) {
-			e->arg0 = pending->flags;
-			e->arg1 = fd;
-			e->size = (__u64)(__u32)pending->dirfd;
-			__builtin_memcpy(e->path, pending->path, sizeof(e->path));
-			bpf_ringbuf_submit(e, 0);
-		}
+	struct event *e = new_event(EVENT_OPEN);
+	if (e) {
+		e->phase = fd >= 0 ? EVENT_PHASE_SUCCESS : EVENT_PHASE_FAILURE;
+		e->syscall_id = ctx->id;
+		e->result = ctx->ret;
+		e->flags = EVENT_RESULT_VALID | EVENT_SYSCALL_ID_VALID;
+		e->arg0 = pending->flags;
+		e->arg1 = fd;
+		e->size = (__u64)(__u32)pending->dirfd;
+		__builtin_memcpy(e->path, pending->path, sizeof(e->path));
+		bpf_ringbuf_submit(e, 0);
 	}
 	bpf_map_delete_elem(&pending_opens, &pid_tgid);
 	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_openat")
+int trace_openat_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	return complete_open(ctx);
 }
 
 SEC("tracepoint/syscalls/sys_enter_openat2")
@@ -648,63 +815,110 @@ int trace_openat2(struct trace_event_raw_sys_enter *ctx)
 SEC("tracepoint/syscalls/sys_exit_openat2")
 int trace_openat2_exit(struct trace_event_raw_sys_exit *ctx)
 {
+	return complete_open(ctx);
+}
+
+static __always_inline void write_metadata(struct event *e, struct pending_write *pending)
+{
+	e->arg0 = pending->fd;
+	e->size = pending->size;
+	e->operation_id = pending->operation_id;
+	e->syscall_id = pending->syscall_id;
+	e->flags = EVENT_SYSCALL_ID_VALID;
+	if (pending->vector) {
+		e->vector_count = (__u32)pending->size;
+		e->flags |= EVENT_VECTOR_COUNT_VALID;
+	} else {
+		e->requested_bytes = pending->size;
+		e->flags |= EVENT_REQUESTED_BYTES_VALID;
+	}
+}
+
+static __always_inline int remember_write(struct trace_event_raw_sys_enter *ctx, __u32 vector)
+{
+	struct pending_write pending = {};
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
-	struct pending_open *pending = bpf_map_lookup_elem(&pending_opens, &pid_tgid);
+	struct event *e;
+
+	if (!cgroup_in_scope())
+		return 0;
+	pending.operation_id = bpf_ktime_get_ns();
+	pending.size = (__u64)ctx->args[2];
+	pending.syscall_id = ctx->id;
+	pending.fd = (__s32)ctx->args[0];
+	pending.vector = vector;
+	if (bpf_map_update_elem(&pending_writes, &pid_tgid, &pending, BPF_ANY) != 0) {
+		count_capture_gap();
+		bpf_map_delete_elem(&pending_writes, &pid_tgid);
+	}
+	e = new_event(EVENT_WRITE);
+	if (e) {
+		write_metadata(e, &pending);
+		bpf_ringbuf_submit(e, 0);
+	}
+	return 0;
+}
+
+static __always_inline int complete_write(struct trace_event_raw_sys_exit *ctx)
+{
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	struct pending_write *pending = bpf_map_lookup_elem(&pending_writes, &pid_tgid);
+	struct event *e;
+
 	if (!pending)
 		return 0;
-
-	int fd = (int)ctx->ret;
-	if (fd >= 0) {
-		struct event *e = new_event(EVENT_OPEN);
-		if (e) {
-			e->arg0 = pending->flags;
-			e->arg1 = fd;
-			e->size = (__u64)(__u32)pending->dirfd;
-			__builtin_memcpy(e->path, pending->path, sizeof(e->path));
-			bpf_ringbuf_submit(e, 0);
-		}
+	if (pending->syscall_id != ctx->id) {
+		count_capture_gap();
+		bpf_map_delete_elem(&pending_writes, &pid_tgid);
+		return 0;
 	}
-	bpf_map_delete_elem(&pending_opens, &pid_tgid);
+	e = new_event(EVENT_WRITE);
+	if (e) {
+		write_metadata(e, pending);
+		e->phase = ctx->ret >= 0 ? EVENT_PHASE_SUCCESS : EVENT_PHASE_FAILURE;
+		e->result = ctx->ret;
+		e->actual_bytes = ctx->ret > 0 ? (__u64)ctx->ret : 0;
+		e->flags |= EVENT_RESULT_VALID | EVENT_ACTUAL_BYTES_VALID;
+		bpf_ringbuf_submit(e, 0);
+	}
+	bpf_map_delete_elem(&pending_writes, &pid_tgid);
 	return 0;
 }
 
 SEC("tracepoint/syscalls/sys_enter_write")
 int trace_write(struct trace_event_raw_sys_enter *ctx)
 {
-	struct event *e = new_event(EVENT_WRITE);
-	if (!e)
-		return 0;
+	return remember_write(ctx, 0);
+}
 
-	e->arg0 = (int)ctx->args[0];
-	e->size = (__u64)ctx->args[2];
-	bpf_ringbuf_submit(e, 0);
-	return 0;
+SEC("tracepoint/syscalls/sys_exit_write")
+int trace_write_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	return complete_write(ctx);
 }
 
 SEC("tracepoint/syscalls/sys_enter_pwrite64")
 int trace_pwrite64(struct trace_event_raw_sys_enter *ctx)
 {
-	struct event *e = new_event(EVENT_WRITE);
-	if (!e)
-		return 0;
+	return remember_write(ctx, 0);
+}
 
-	e->arg0 = (int)ctx->args[0];
-	e->size = (__u64)ctx->args[2];
-	bpf_ringbuf_submit(e, 0);
-	return 0;
+SEC("tracepoint/syscalls/sys_exit_pwrite64")
+int trace_pwrite64_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	return complete_write(ctx);
 }
 
 SEC("tracepoint/syscalls/sys_enter_writev")
 int trace_writev(struct trace_event_raw_sys_enter *ctx)
 {
-	struct event *e = new_event(EVENT_WRITE);
-	if (!e)
-		return 0;
+	return remember_write(ctx, 1);
+}
 
-	e->arg0 = (int)ctx->args[0];
-	e->size = (__u64)ctx->args[2];
-	bpf_ringbuf_submit(e, 0);
-	return 0;
+SEC("tracepoint/syscalls/sys_exit_writev")
+int trace_writev_exit(struct trace_event_raw_sys_exit *ctx)
+{
+	return complete_write(ctx);
 }
 
 SEC("tracepoint/syscalls/sys_enter_copy_file_range")
@@ -845,6 +1059,10 @@ int trace_dup_exit(struct trace_event_raw_sys_exit *ctx)
 	if (newfd >= 0) {
 		struct event *e = new_event(EVENT_DUP);
 		if (e) {
+			e->phase = EVENT_PHASE_SUCCESS;
+			e->syscall_id = ctx->id;
+			e->result = ctx->ret;
+			e->flags = EVENT_RESULT_VALID | EVENT_SYSCALL_ID_VALID;
 			e->arg0 = pending->oldfd;
 			e->arg1 = newfd;
 			bpf_ringbuf_submit(e, 0);
@@ -881,6 +1099,10 @@ int trace_dup2_exit(struct trace_event_raw_sys_exit *ctx)
 	if (newfd >= 0) {
 		struct event *e = new_event(EVENT_DUP);
 		if (e) {
+			e->phase = EVENT_PHASE_SUCCESS;
+			e->syscall_id = ctx->id;
+			e->result = ctx->ret;
+			e->flags = EVENT_RESULT_VALID | EVENT_SYSCALL_ID_VALID;
 			e->arg0 = pending->oldfd;
 			e->arg1 = newfd;
 			bpf_ringbuf_submit(e, 0);
@@ -917,6 +1139,10 @@ int trace_dup3_exit(struct trace_event_raw_sys_exit *ctx)
 	if (newfd >= 0) {
 		struct event *e = new_event(EVENT_DUP);
 		if (e) {
+			e->phase = EVENT_PHASE_SUCCESS;
+			e->syscall_id = ctx->id;
+			e->result = ctx->ret;
+			e->flags = EVENT_RESULT_VALID | EVENT_SYSCALL_ID_VALID;
 			e->arg0 = pending->oldfd;
 			e->arg1 = newfd;
 			bpf_ringbuf_submit(e, 0);
@@ -957,6 +1183,10 @@ int trace_fcntl_exit(struct trace_event_raw_sys_exit *ctx)
 	if (newfd >= 0) {
 		struct event *e = new_event(EVENT_DUP);
 		if (e) {
+			e->phase = EVENT_PHASE_SUCCESS;
+			e->syscall_id = ctx->id;
+			e->result = ctx->ret;
+			e->flags = EVENT_RESULT_VALID | EVENT_SYSCALL_ID_VALID;
 			e->arg0 = pending->oldfd;
 			e->arg1 = newfd;
 			bpf_ringbuf_submit(e, 0);

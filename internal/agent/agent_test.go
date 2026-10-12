@@ -2,6 +2,10 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -76,6 +80,18 @@ func TestMatchesCgroupPath(t *testing.T) {
 	}
 	if matchesCgroupPath("/system.slice/ssh.service", []string{"/user.slice"}) {
 		t.Fatal("unexpected cgroup match")
+	}
+	if !matchesCgroupPath("/system.slice/ssh.service", []string{"/"}) {
+		t.Fatal("root cgroup prefix should match all absolute paths")
+	}
+}
+
+func TestRootDirectoryPrefixMatchesAbsolutePaths(t *testing.T) {
+	if !hasDirPrefix("/var/lib/data", []string{"/"}) {
+		t.Fatal("root directory prefix should match absolute paths")
+	}
+	if !matchesAnyPath("/usr/bin/tool", []string{"/"}) {
+		t.Fatal("root path candidate should match absolute paths")
 	}
 }
 
@@ -617,7 +633,7 @@ func TestTrustedEventUsesCachedProcInfo(t *testing.T) {
 	}
 }
 
-func TestExecEventCachesTargetPathAsProcInfo(t *testing.T) {
+func TestExecAttemptNeverCachesTargetAsIdentity(t *testing.T) {
 	now := time.Now()
 	a := &Agent{
 		procInfos: map[uint32]cachedProcInfo{},
@@ -636,8 +652,8 @@ func TestExecEventCachesTargetPathAsProcInfo(t *testing.T) {
 	if !ok {
 		t.Fatal("expected cached proc info")
 	}
-	if cached.Info.Exe != "/usr/bin/tar" {
-		t.Fatalf("cached exe = %q, want /usr/bin/tar", cached.Info.Exe)
+	if cached.Info.Exe != "" || !cached.NeedsRefresh {
+		t.Fatalf("attempt cached an executable identity: %+v", cached)
 	}
 	if !cached.LastSeen.Equal(now) {
 		t.Fatalf("cached LastSeen = %s, want %s", cached.LastSeen, now)
@@ -661,5 +677,186 @@ func TestMatchRuleReturnsFirstMatchingRule(t *testing.T) {
 	}
 	if reason != "fanout rule" || action != "deny" {
 		t.Fatalf("reason/action = %q/%q, want fanout rule/deny", reason, action)
+	}
+}
+
+func TestRecordFeaturesCapsTrackedPaths(t *testing.T) {
+	a := &Agent{}
+	state := &procState{}
+	for i := 0; i < maxTrackedPaths+128; i++ {
+		a.recordFeatures(state, sensor.Event{
+			Type: sensor.EventOpen,
+			Arg0: 1,
+			Path: fmt.Sprintf("/protected/file-%d", i),
+		})
+	}
+	if got := len(state.seenPaths); got != maxTrackedPaths {
+		t.Fatalf("seenPaths len = %d, want cap %d", got, maxTrackedPaths)
+	}
+	if got := len(state.openWritePaths); got != maxTrackedPaths {
+		t.Fatalf("openWritePaths len = %d, want cap %d", got, maxTrackedPaths)
+	}
+}
+
+func TestLogActionDoesNotMarkStateBlocked(t *testing.T) {
+	a := &Agent{policy: config.Policy{Action: "log"}}
+	state := &procState{TGID: 42}
+	a.block(state)
+	if state.Blocked {
+		t.Fatal("log action marked process state blocked")
+	}
+}
+
+func TestBlockedLineageExpiresByBlockTTL(t *testing.T) {
+	a := &Agent{
+		policy:  config.Policy{BlockTTL: time.Second},
+		blocked: map[uint32]time.Time{42: time.Now().Add(-2 * time.Second)},
+	}
+	if a.isBlocked(42) {
+		t.Fatal("expired blocked lineage still considered active")
+	}
+	if _, ok := a.blocked[42]; ok {
+		t.Fatal("expired blocked lineage was not removed")
+	}
+}
+
+func TestStateBlockExpiresByBlockTTL(t *testing.T) {
+	t0 := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	a := &Agent{policy: config.Policy{BlockTTL: time.Second}}
+	state := &procState{Blocked: true, BlockedAt: t0}
+	if !a.stateBlocked(state, t0.Add(time.Second)) {
+		t.Fatal("state block expired at the inclusive TTL boundary")
+	}
+	if a.stateBlocked(state, t0.Add(2*time.Second)) {
+		t.Fatal("state block remained active after block_ttl")
+	}
+	if state.Blocked || !state.BlockedAt.IsZero() {
+		t.Fatalf("expired state block was not cleared: %+v", state)
+	}
+}
+
+func TestResolveOpenPathUsesProcCWDAndDirFD(t *testing.T) {
+	if _, err := os.Stat("/proc/self/cwd"); err != nil {
+		t.Skip("procfs is required")
+	}
+	dir := t.TempDir()
+	a := &Agent{fdPaths: make(map[fdKey]fdState)}
+	tgid := uint32(os.Getpid())
+
+	cwd, err := os.Readlink("/proc/self/cwd")
+	if err != nil {
+		t.Fatalf("read cwd: %v", err)
+	}
+	dirfd := int32(-100)
+	if got := a.resolveOpenPath(sensor.Event{TGID: tgid, Path: "relative.txt", Size: uint64(uint32(dirfd))}); got != filepath.Join(cwd, "relative.txt") {
+		t.Fatalf("AT_FDCWD path = %q, want %q", got, filepath.Join(cwd, "relative.txt"))
+	}
+
+	f, err := os.Open(dir)
+	if err != nil {
+		t.Fatalf("open temp dir: %v", err)
+	}
+	defer f.Close()
+	if got := a.resolveOpenPath(sensor.Event{TGID: tgid, Path: "nested.txt", Size: uint64(uint32(f.Fd()))}); got != filepath.Join(dir, "nested.txt") {
+		t.Fatalf("dirfd path = %q, want %q", got, filepath.Join(dir, "nested.txt"))
+	}
+}
+
+func TestPruneUsesSlidingWindowInsteadOfResettingWholeWindow(t *testing.T) {
+	t0 := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	a := &Agent{policy: config.Policy{Window: 10 * time.Second}}
+	state := &procState{
+		FirstSeen: t0,
+		Score:     3,
+		history: []historyEvent{
+			{At: t0, Type: "write", Score: 2, Reason: "old"},
+			{At: t0.Add(9 * time.Second), Type: "write", Score: 1, Reason: "recent"},
+		},
+	}
+
+	a.prune(state, t0.Add(11*time.Second))
+
+	if state.Score != 1 {
+		t.Fatalf("score after pruning = %d, want 1", state.Score)
+	}
+	if state.EventCount != 1 || len(state.RecentEvents) != 1 {
+		t.Fatalf("retained events = %d/%d, want 1/1", state.EventCount, len(state.RecentEvents))
+	}
+	if !state.FirstSeen.Equal(t0.Add(9 * time.Second)) {
+		t.Fatalf("FirstSeen = %s, want recent event time", state.FirstSeen)
+	}
+}
+
+func TestRebuildWindowRestoresHighRateReason(t *testing.T) {
+	a := &Agent{policy: config.Policy{Scores: config.Scores{HighRateBonus: 15}}}
+	state := &procState{history: make([]historyEvent, 64)}
+	for i := range state.history {
+		state.history[i] = historyEvent{At: time.Unix(int64(i+1), 0), Type: "write", Score: 1, Reason: "write", WriteCount: 1}
+	}
+	a.rebuildWindow(state)
+	if state.Score != 79 || !state.HighRateScored {
+		t.Fatalf("rebuilt high-rate state = score %d, scored %t", state.Score, state.HighRateScored)
+	}
+	if !slices.Contains(state.Reasons, "high-rate file mutation") {
+		t.Fatalf("rebuilt reasons = %#v, missing high-rate reason", state.Reasons)
+	}
+}
+
+func TestInlineIOCReason(t *testing.T) {
+	a := &Agent{policy: config.Policy{
+		SuspiciousExtensions: []string{".locked"},
+		RansomNoteNames:      []string{"README_FOR_DECRYPT.txt"},
+	}}
+	tests := []struct {
+		name string
+		ev   sensor.Event
+		want string
+	}{
+		{name: "ransom note", ev: sensor.Event{Arg0: int32(sensor.EventOpen), Path: "README_FOR_DECRYPT.txt"}, want: "protected ransom note creation"},
+		{name: "extension", ev: sensor.Event{Arg0: int32(sensor.EventOpen), Path: "report.locked"}, want: "protected suspicious extension write"},
+		{name: "rename", ev: sensor.Event{Arg0: int32(sensor.EventRename), Path: "report.locked"}, want: "protected rename to suspicious extension"},
+		{name: "unlink", ev: sensor.Event{Arg0: int32(sensor.EventUnlink), Path: "report.locked"}, want: "protected suspicious IOC unlink"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := a.inlineIOCReason(tt.ev); got != tt.want {
+				t.Fatalf("inlineIOCReason = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestImmediateIOCRespectsLogAction(t *testing.T) {
+	policy := config.Policy{
+		Name:                 "log-only",
+		Action:               "log",
+		Window:               10 * time.Second,
+		Threshold:            45,
+		ProtectedDirs:        []string{"/protected"},
+		SuspiciousExtensions: []string{".locked"},
+	}
+	a := New(policy, nil, Options{})
+	a.handle(sensor.Event{
+		Timestamp: time.Now(),
+		PID:       123,
+		TGID:      123,
+		Type:      sensor.EventRename,
+		Path:      "/protected/report.txt",
+		Path2:     "/protected/report.txt.locked",
+		Comm:      "sample",
+	})
+
+	state := a.procs[123]
+	if state == nil {
+		t.Fatal("immediate IOC did not create process state")
+	}
+	if state.Blocked {
+		t.Fatal("action=log marked immediate IOC state as blocked")
+	}
+	if state.Score != policy.Threshold {
+		t.Fatalf("immediate IOC score = %d, want %d", state.Score, policy.Threshold)
+	}
+	if a.metrics.Alerts != 1 || a.metrics.Blocks != 0 {
+		t.Fatalf("metrics = %+v, want one alert and no blocks", a.metrics)
 	}
 }

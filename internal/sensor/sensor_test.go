@@ -10,22 +10,33 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 )
 
+func newTestMap(t *testing.T, spec *ebpf.MapSpec) *ebpf.Map {
+	t.Helper()
+	m, err := ebpf.NewMap(spec)
+	if err == nil {
+		return m
+	}
+	if errors.Is(err, ebpf.ErrNotSupported) || strings.Contains(strings.ToLower(err.Error()), "operation not supported") {
+		t.Skipf("BPF maps unavailable in this environment: %v", err)
+	}
+	t.Fatalf("create map: %v", err)
+	return nil
+}
+
 func TestRingbufDropsReadsCounterMap(t *testing.T) {
-	m, err := ebpf.NewMap(&ebpf.MapSpec{
+	m := newTestMap(t, &ebpf.MapSpec{
 		Name:       "ringbuf_drops_test",
 		Type:       ebpf.Array,
 		KeySize:    4,
 		ValueSize:  8,
 		MaxEntries: 1,
 	})
-	if err != nil {
-		t.Fatalf("create map: %v", err)
-	}
 	defer m.Close()
 
 	var key uint32
@@ -196,19 +207,19 @@ func TestKprobeSymbolsAreArchitectureAware(t *testing.T) {
 			name: "amd64",
 			op:   "openat",
 			arch: "amd64",
-			want: []string{"__x64_sys_openat", "__se_sys_openat"},
+			want: []string{"__x64_sys_openat", "__se_sys_openat", "sys_openat"},
 		},
 		{
 			name: "arm64",
 			op:   "openat",
 			arch: "arm64",
-			want: []string{"__arm64_sys_openat", "__se_sys_openat"},
+			want: []string{"__arm64_sys_openat", "__se_sys_openat", "sys_openat"},
 		},
 		{
 			name: "fallback",
 			op:   "write",
 			arch: "riscv64",
-			want: []string{"__riscv64_sys_write", "__se_sys_write"},
+			want: []string{"__riscv64_sys_write", "__se_sys_write", "sys_write"},
 		},
 	}
 
@@ -297,16 +308,13 @@ func TestMapPollingEventReaderClose(t *testing.T) {
 }
 
 func TestSyncHashSetClearsAndWritesPolicyValues(t *testing.T) {
-	m, err := ebpf.NewMap(&ebpf.MapSpec{
+	m := newTestMap(t, &ebpf.MapSpec{
 		Name:       "ioc_hash_test",
 		Type:       ebpf.Hash,
 		KeySize:    8,
 		ValueSize:  1,
 		MaxEntries: 8,
 	})
-	if err != nil {
-		t.Fatalf("create map: %v", err)
-	}
 	defer m.Close()
 
 	var one uint8 = 1
@@ -334,20 +342,17 @@ func TestSyncHashSetClearsAndWritesPolicyValues(t *testing.T) {
 }
 
 func TestSyncProtectedDirsWritesStatKey(t *testing.T) {
-	m, err := ebpf.NewMap(&ebpf.MapSpec{
+	m := newTestMap(t, &ebpf.MapSpec{
 		Name:       "protected_dirs_test",
 		Type:       ebpf.Hash,
 		KeySize:    16,
 		ValueSize:  1,
 		MaxEntries: 8,
 	})
-	if err != nil {
-		t.Fatalf("create map: %v", err)
-	}
 	defer m.Close()
 
 	dir := t.TempDir()
-	count, err := syncProtectedDirs(m, []string{"/definitely/not/here", dir})
+	count, err := syncProtectedDirs(m, []string{"/definitely/not/here", dir, dir})
 	if err != nil {
 		t.Fatalf("syncProtectedDirs: %v", err)
 	}
@@ -377,27 +382,21 @@ func TestCgroupFSPath(t *testing.T) {
 }
 
 func TestSyncCgroupScopeWritesIDsAndToggle(t *testing.T) {
-	allowed, err := ebpf.NewMap(&ebpf.MapSpec{
+	allowed := newTestMap(t, &ebpf.MapSpec{
 		Name:       "allowed_cgroups_test",
 		Type:       ebpf.Hash,
 		KeySize:    8,
 		ValueSize:  1,
 		MaxEntries: 8,
 	})
-	if err != nil {
-		t.Fatalf("create allowed map: %v", err)
-	}
 	defer allowed.Close()
-	enabled, err := ebpf.NewMap(&ebpf.MapSpec{
+	enabled := newTestMap(t, &ebpf.MapSpec{
 		Name:       "cgroup_scope_enabled_test",
 		Type:       ebpf.Array,
 		KeySize:    4,
 		ValueSize:  1,
 		MaxEntries: 1,
 	})
-	if err != nil {
-		t.Fatalf("create enabled map: %v", err)
-	}
 	defer enabled.Close()
 
 	count, err := syncCgroupScope(allowed, enabled, []string{"/"})
@@ -442,6 +441,62 @@ func TestSyncCgroupScopeWritesIDsAndToggle(t *testing.T) {
 	}
 }
 
+func TestConfigureEnforcementSyncsInlineIOCAction(t *testing.T) {
+	m := newTestMap(t, &ebpf.MapSpec{
+		Name:       "ioc_action_test",
+		Type:       ebpf.Array,
+		KeySize:    4,
+		ValueSize:  4,
+		MaxEntries: 1,
+	})
+	defer m.Close()
+
+	s := &Sensor{maps: sensorMaps{InlineIOCAction: m}}
+	tests := []struct {
+		name   string
+		action string
+		dryRun bool
+		want   uint32
+	}{
+		{name: "dry run kill observes", action: "kill", dryRun: true, want: 0},
+		{name: "log observes", action: "log", want: 0},
+		{name: "deny", action: "deny", want: BlockActionDeny},
+		{name: "kill", action: "kill", want: BlockActionKill},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := s.ConfigureEnforcement(tt.action, tt.dryRun); err != nil {
+				t.Fatalf("ConfigureEnforcement: %v", err)
+			}
+			var got uint32
+			if err := m.Lookup(uint32(0), &got); err != nil {
+				t.Fatalf("lookup action: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("action = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestConfigureEnforcementRejectsUnknownAction(t *testing.T) {
+	m := newTestMap(t, &ebpf.MapSpec{
+		Name:       "ioc_bad_action",
+		Type:       ebpf.Array,
+		KeySize:    4,
+		ValueSize:  4,
+		MaxEntries: 1,
+	})
+	defer m.Close()
+
+	s := &Sensor{maps: sensorMaps{InlineIOCAction: m}}
+	for _, dryRun := range []bool{false, true} {
+		if err := s.ConfigureEnforcement("terminate", dryRun); err == nil {
+			t.Fatalf("expected unknown enforcement action to fail with dryRun=%t", dryRun)
+		}
+	}
+}
+
 func TestDecodeEventPreservesIPv6ConnectBytes(t *testing.T) {
 	raw := make([]byte, eventSize)
 	off := 8 + 4 + 4 + 4 + 4
@@ -464,5 +519,32 @@ func TestDecodeEventPreservesIPv6ConnectBytes(t *testing.T) {
 	}
 	if ev.Path[15] != 1 {
 		t.Fatalf("last IPv6 byte = %d, want 1", ev.Path[15])
+	}
+}
+
+func TestDecodeEventConvertsMonotonicTimestamp(t *testing.T) {
+	first := make([]byte, eventSize)
+	second := make([]byte, eventSize)
+	binary.LittleEndian.PutUint64(first[0:], 1_000_000_000)
+	binary.LittleEndian.PutUint64(second[0:], 2_000_000_000)
+
+	gotFirst, err := DecodeEvent(first)
+	if err != nil {
+		t.Fatalf("DecodeEvent(first): %v", err)
+	}
+	gotSecond, err := DecodeEvent(second)
+	if err != nil {
+		t.Fatalf("DecodeEvent(second): %v", err)
+	}
+	if delta := gotSecond.Timestamp.Sub(gotFirst.Timestamp); delta != time.Second {
+		t.Fatalf("timestamp delta = %s, want 1s", delta)
+	}
+}
+
+func TestCgroupFSPathRejectsTraversal(t *testing.T) {
+	for _, path := range []string{"../etc", "/../../etc", "foo/../../etc"} {
+		if got := cgroupFSPath(path); got != "" {
+			t.Fatalf("cgroupFSPath(%q) = %q, want rejected", path, got)
+		}
 	}
 }

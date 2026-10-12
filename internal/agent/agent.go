@@ -23,22 +23,33 @@ type Options struct {
 }
 
 type Agent struct {
-	policy    config.Policy
-	sensor    *sensor.Sensor
-	options   Options
-	procs     map[uint32]*procState
-	fdMu      sync.RWMutex
-	fdPaths   map[fdKey]fdState
-	procMu    sync.RWMutex
-	procInfos map[uint32]cachedProcInfo
-	blockedMu sync.RWMutex
-	blocked   map[uint32]time.Time
-	blacklist *blacklist
-	hashes    *hashCache
-	hashQueue chan hashJob
-	lastDrops uint64
-	metrics   metrics
+	policy          config.Policy
+	sensor          *sensor.Sensor
+	options         Options
+	procs           map[uint32]*procState
+	fdMu            sync.RWMutex
+	fdPaths         map[fdKey]fdState
+	procMu          sync.RWMutex
+	procInfos       map[uint32]cachedProcInfo
+	procReader      func(uint32) (procInfo, error)
+	blockedMu       sync.RWMutex
+	blocked         map[uint32]time.Time
+	blacklist       *blacklist
+	hashes          *hashCache
+	hashQueue       chan hashJob
+	metricsMu       sync.Mutex
+	lastDrops       uint64
+	lastCaptureGaps uint64
+	metrics         metrics
 }
+
+const (
+	// Keep alert payloads and per-process cardinality bounded even when a
+	// process continuously mutates files faster than the window can expire.
+	maxRecentEvents  = 256
+	maxTrackedPaths  = 4096
+	maxHistoryEvents = 4096
+)
 
 type hashJob struct {
 	TGID   uint32
@@ -61,8 +72,9 @@ type fdState struct {
 }
 
 type cachedProcInfo struct {
-	Info     procInfo
-	LastSeen time.Time
+	Info         procInfo
+	LastSeen     time.Time
+	NeedsRefresh bool
 }
 
 type procState struct {
@@ -77,12 +89,28 @@ type procState struct {
 	EventCount     int
 	WriteCount     int
 	Blocked        bool
+	BlockedAt      time.Time
 	Reasons        []string
 	RecentEvents   []scoredEvent
 	HighRateScored bool
 	Features       procFeatures
 	seenPaths      map[string]struct{}
 	openWritePaths map[string]struct{}
+	history        []historyEvent
+}
+
+type historyEvent struct {
+	At             time.Time
+	Type           string
+	Path           string
+	Path2          string
+	Score          int
+	Reason         string
+	WriteCount     int
+	FeaturePaths   []string
+	OpenWritePath  string
+	RenameSuffix   bool
+	FinalizeSignal bool
 }
 
 type procFeatures struct {
@@ -99,6 +127,7 @@ type metrics struct {
 	Blocks            uint64 `json:"blocks"`
 	BlacklistMatches  uint64 `json:"blacklist_matches"`
 	RingbufDropsTotal uint64 `json:"ringbuf_drops_total"`
+	CaptureGapsTotal  uint64 `json:"capture_gaps_total"`
 }
 
 type scoredEvent struct {
@@ -153,6 +182,12 @@ func New(policy config.Policy, s *sensor.Sensor, options Options) *Agent {
 }
 
 func (a *Agent) Run(ctx context.Context) error {
+	if a == nil || a.sensor == nil {
+		return fmt.Errorf("agent sensor is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	events, errs := a.sensor.Events(ctx)
 	pruneTicker := time.NewTicker(a.pruneInterval())
 	dropTicker := time.NewTicker(a.ringbufDropInterval())
@@ -169,7 +204,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case err, ok := <-errs:
-			if ok && err != nil {
+			if !ok {
+				errs = nil
+				continue
+			}
+			if err != nil {
 				return err
 			}
 		case ev, ok := <-events:
@@ -188,13 +227,30 @@ func (a *Agent) Run(ctx context.Context) error {
 }
 
 func (a *Agent) handle(ev sensor.Event) {
-	if a.options.DebugEvents {
-		log.Printf("event type=%s pid=%d tgid=%d ppid=%d uid=%d comm=%q arg0=%d size=%d path=%q path2=%q",
-			ev.TypeName(), ev.PID, ev.TGID, ev.PPID, ev.UID, ev.Comm, ev.Arg0, ev.Size, ev.Path, ev.Path2)
+	if ev.Timestamp.IsZero() {
+		ev.Timestamp = time.Now()
+	}
+	// Logging our own writes would generate more events, especially now that
+	// each write can emit both an attempt and a completion.
+	if a.options.DebugEvents && ev.TGID != uint32(os.Getpid()) {
+		log.Printf("event type=%s pid=%d tgid=%d ppid=%d uid=%d comm=%q arg0=%d size=%d path=%q path2=%q abi=%d phase=%s source=%s flags=%d syscall_id=%d result=%d operation_id=%d requested_bytes=%d actual_bytes=%d vector_count=%d",
+			ev.TypeName(), ev.PID, ev.TGID, ev.PPID, ev.UID, ev.Comm, ev.Arg0, ev.Size, ev.Path, ev.Path2,
+			ev.ABIVersion, ev.PhaseName(), ev.SourceName(), ev.Flags, ev.SyscallID, ev.Result, ev.OperationID, ev.RequestedBytes, ev.ActualBytes, ev.VectorCount)
 	}
 
 	if ev.Type == sensor.EventBlock {
+		if ev.Size == uint64(sensor.BlockReasonInlineIOC) {
+			a.handleInlineIOCBlock(ev)
+			return
+		}
 		log.Printf("blocked op=%s pid=%d tgid=%d comm=%s", eventName(uint32(ev.Arg0)), ev.PID, ev.TGID, ev.Comm)
+		return
+	}
+
+	// Completion records enrich telemetry; the legacy detector already scores
+	// write attempts. Failed operations must never update its FD or path state.
+	if ev.Phase == sensor.PhaseFailure ||
+		(ev.Type == sensor.EventWrite && ev.Phase == sensor.PhaseSuccess) {
 		return
 	}
 
@@ -208,10 +264,9 @@ func (a *Agent) handle(ev sensor.Event) {
 
 	if ev.Type == sensor.EventExec {
 		a.cacheExecInfo(ev)
-	}
-
-	if a.isTrustedEvent(ev) && !a.backupSensitiveEvent(ev) && !a.selfProtectSensitiveEvent(ev) {
-		return
+		if ev.Phase == sensor.PhaseSuccess {
+			return
+		}
 	}
 
 	if ev.Type == sensor.EventExec && a.blockedLineage(ev) && !a.options.DryRun {
@@ -224,11 +279,21 @@ func (a *Agent) handle(ev sensor.Event) {
 		return
 	}
 
+	if a.isTrustedEvent(ev) && !a.backupSensitiveEvent(ev) && !a.selfProtectSensitiveEvent(ev) {
+		return
+	}
+
 	if reason := a.immediateIOC(ev); reason != "" {
 		state := a.state(ev)
 		a.prune(state, ev.Timestamp)
 		a.recordFeatures(state, ev)
-		state.Blocked = true
+		action := normalizeAction(strings.ToLower(strings.TrimSpace(a.policy.Action)))
+		state.Score = max(state.Score, a.policy.Threshold)
+		state.EventCount++
+		if action != "log" {
+			state.Blocked = true
+			state.BlockedAt = ev.Timestamp
+		}
 		state.Reasons = appendReason(state.Reasons, reason)
 		state.RecentEvents = append(state.RecentEvents, scoredEvent{
 			At:     ev.Timestamp,
@@ -238,7 +303,10 @@ func (a *Agent) handle(ev sensor.Event) {
 			Score:  a.policy.Threshold,
 			Reason: reason,
 		})
-		a.alertAndEnforce(state, reason, "kill")
+		if len(state.RecentEvents) > maxRecentEvents {
+			state.RecentEvents = state.RecentEvents[len(state.RecentEvents)-maxRecentEvents:]
+		}
+		a.alertAndEnforce(state, reason, action)
 		return
 	}
 
@@ -263,6 +331,9 @@ func (a *Agent) handle(ev sensor.Event) {
 		Score:  score,
 		Reason: reason,
 	})
+	if len(state.RecentEvents) > maxRecentEvents {
+		state.RecentEvents = state.RecentEvents[len(state.RecentEvents)-maxRecentEvents:]
+	}
 	state.Reasons = appendReason(state.Reasons, reason)
 
 	if !state.HighRateScored && state.WriteCount >= 64 {
@@ -271,16 +342,42 @@ func (a *Agent) handle(ev sensor.Event) {
 		state.Reasons = appendReason(state.Reasons, "high-rate file mutation")
 	}
 
-	if matched, reason, action := a.matchRule(state); matched && !state.Blocked {
+	history := historyEvent{
+		At:           ev.Timestamp,
+		Type:         ev.TypeName(),
+		Path:         ev.Path,
+		Path2:        ev.Path2,
+		Score:        score,
+		Reason:       reason,
+		FeaturePaths: append([]string(nil), a.featurePaths(ev)...),
+	}
+	if ev.Type == sensor.EventWrite || ev.Type == sensor.EventOpen {
+		history.WriteCount = 1
+	}
+	if ev.Type == sensor.EventOpen && isWriteOpen(ev.Arg0) && ev.Path != "" {
+		history.OpenWritePath = ev.Path
+	}
+	history.RenameSuffix = ev.Type == sensor.EventRename && a.hasSuspiciousExtension(ev.Path2)
+	history.FinalizeSignal = (ev.Type == sensor.EventRename && a.hasSuspiciousExtension(ev.Path2)) ||
+		(ev.Type == sensor.EventOpen && (a.isRansomNote(ev.Path) || a.hasSuspiciousExtension(ev.Path)))
+	state.history = append(state.history, history)
+	if len(state.history) > maxHistoryEvents {
+		state.history = state.history[len(state.history)-maxHistoryEvents:]
+		a.rebuildWindow(state)
+	}
+
+	blocked := a.stateBlocked(state, ev.Timestamp)
+	if matched, reason, action := a.matchRule(state); matched && !blocked {
 		if action != "log" {
 			state.Blocked = true
+			state.BlockedAt = ev.Timestamp
 		}
 		state.Reasons = appendReason(state.Reasons, reason)
 		a.alertAndEnforce(state, reason, action)
 		return
 	}
 
-	if state.Score >= a.policy.Threshold && !state.Blocked {
+	if state.Score >= a.policy.Threshold && !a.stateBlocked(state, ev.Timestamp) {
 		a.block(state)
 	}
 }
@@ -325,14 +422,30 @@ func (a *Agent) resolveOpenPath(ev sensor.Event) string {
 		return path
 	}
 	dirfd := int32(ev.Size)
+	base := ""
 	if dirfd == -100 {
-		return path
+		base = procSymlink(ev.TGID, "cwd")
+	} else {
+		base = a.fdPath(ev.TGID, dirfd)
+		if base == "" {
+			base = procSymlink(ev.TGID, fmt.Sprintf("fd/%d", dirfd))
+		}
 	}
-	base := a.fdPath(ev.TGID, dirfd)
 	if base == "" {
 		return path
 	}
-	return filepath.Join(base, path)
+	return filepath.Clean(filepath.Join(base, path))
+}
+
+func procSymlink(tgid uint32, name string) string {
+	if tgid == 0 || name == "" {
+		return ""
+	}
+	path, err := os.Readlink(fmt.Sprintf("/proc/%d/%s", tgid, name))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSuffix(path, " (deleted)")
 }
 
 func (a *Agent) fdPath(tgid uint32, fd int32) string {
@@ -375,6 +488,59 @@ func (a *Agent) immediateIOC(ev sensor.Event) string {
 	return ""
 }
 
+func (a *Agent) handleInlineIOCBlock(ev sensor.Event) {
+	action := actionName(uint32(ev.Arg1))
+	if action != "deny" && action != "kill" {
+		log.Printf("blocked inline_ioc op=%s pid=%d tgid=%d comm=%s invalid_action=%d", eventName(uint32(ev.Arg0)), ev.PID, ev.TGID, ev.Comm, ev.Arg1)
+		return
+	}
+
+	state := a.state(ev)
+	a.prune(state, ev.Timestamp)
+	if a.stateBlocked(state, ev.Timestamp) {
+		log.Printf("blocked inline_ioc op=%s pid=%d tgid=%d comm=%s action=%s path=%q", eventName(uint32(ev.Arg0)), ev.PID, ev.TGID, ev.Comm, action, ev.Path)
+		return
+	}
+
+	reason := a.inlineIOCReason(ev)
+	state.Score = max(state.Score, a.policy.Threshold)
+	state.EventCount++
+	state.Blocked = true
+	state.BlockedAt = ev.Timestamp
+	state.Reasons = appendReason(state.Reasons, reason)
+	state.RecentEvents = append(state.RecentEvents, scoredEvent{
+		At:     ev.Timestamp,
+		Type:   eventName(uint32(ev.Arg0)),
+		Path:   ev.Path,
+		Score:  a.policy.Threshold,
+		Reason: reason,
+	})
+	if len(state.RecentEvents) > maxRecentEvents {
+		state.RecentEvents = state.RecentEvents[len(state.RecentEvents)-maxRecentEvents:]
+	}
+	a.emitAlert(state, action, false)
+	a.metricsMu.Lock()
+	a.metrics.Blocks++
+	a.metricsMu.Unlock()
+	log.Printf("blocked inline_ioc op=%s pid=%d tgid=%d comm=%s action=%s path=%q", eventName(uint32(ev.Arg0)), ev.PID, ev.TGID, ev.Comm, action, ev.Path)
+}
+
+func (a *Agent) inlineIOCReason(ev sensor.Event) string {
+	switch uint32(ev.Arg0) {
+	case sensor.EventOpen:
+		if a.isRansomNote(ev.Path) {
+			return "protected ransom note creation"
+		}
+		return "protected suspicious extension write"
+	case sensor.EventRename:
+		return "protected rename to suspicious extension"
+	case sensor.EventUnlink:
+		return "protected suspicious IOC unlink"
+	default:
+		return "protected inline IOC"
+	}
+}
+
 func (a *Agent) blacklistedEvent(ev sensor.Event) (bool, string) {
 	if a.blacklist == nil || a.blacklist.empty() || ev.Type != sensor.EventExec || ev.Path == "" {
 		return false, ""
@@ -395,10 +561,24 @@ func (a *Agent) blacklistedEvent(ev sensor.Event) (bool, string) {
 }
 
 func (a *Agent) isBlocked(tgid uint32) bool {
+	if tgid == 0 {
+		return false
+	}
 	a.blockedMu.RLock()
-	defer a.blockedMu.RUnlock()
-	_, ok := a.blocked[tgid]
-	return ok
+	seen, ok := a.blocked[tgid]
+	a.blockedMu.RUnlock()
+	if !ok {
+		return false
+	}
+	if a.policy.BlockTTL > 0 && !seen.IsZero() && time.Since(seen) > a.policy.BlockTTL {
+		a.blockedMu.Lock()
+		if current, exists := a.blocked[tgid]; exists && current.Equal(seen) {
+			delete(a.blocked, tgid)
+		}
+		a.blockedMu.Unlock()
+		return false
+	}
+	return true
 }
 
 func (a *Agent) blockedLineage(ev sensor.Event) bool {
@@ -415,6 +595,10 @@ func (a *Agent) enforceTGID(tgid uint32, action uint32, reason string) {
 	if a.options.DryRun {
 		return
 	}
+	if a.sensor == nil {
+		log.Printf("cannot enforce tgid=%d reason=%q: sensor is nil", tgid, reason)
+		return
+	}
 	if err := a.sensor.BlockTGID(tgid, action, a.policy.BlockTTL); err != nil {
 		log.Printf("failed to block tgid=%d reason=%q: %v", tgid, reason, err)
 		return
@@ -429,6 +613,9 @@ func (a *Agent) enforceTGID(tgid uint32, action uint32, reason string) {
 }
 
 func (a *Agent) enqueueHash(job hashJob) {
+	if a == nil || a.hashQueue == nil {
+		return
+	}
 	select {
 	case a.hashQueue <- job:
 	default:
@@ -437,11 +624,20 @@ func (a *Agent) enqueueHash(job hashJob) {
 }
 
 func (a *Agent) hashWorker(ctx context.Context) {
+	if a == nil || a.hashes == nil || a.blacklist == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case job := <-a.hashQueue:
+		case job, ok := <-a.hashQueue:
+			if !ok {
+				return
+			}
 			hash, err := a.hashes.compute(job.Path)
 			if err != nil {
 				if a.options.DebugEvents {
@@ -457,7 +653,7 @@ func (a *Agent) hashWorker(ctx context.Context) {
 }
 
 func (a *Agent) procHash(path string) (string, bool) {
-	if path == "" {
+	if a == nil || a.hashes == nil || path == "" {
 		return "", false
 	}
 	hash, err := a.hashes.compute(path)
@@ -471,6 +667,12 @@ func (a *Agent) procHash(path string) (string, bool) {
 }
 
 func (a *Agent) scanBlacklist(ctx context.Context) {
+	if a == nil || a.blacklist == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	interval := a.policy.BlacklistScan
 	if interval <= 0 {
 		interval = 5 * time.Second
@@ -489,6 +691,9 @@ func (a *Agent) scanBlacklist(ctx context.Context) {
 }
 
 func (a *Agent) scanBlacklistOnce() {
+	if a == nil || a.blacklist == nil {
+		return
+	}
 	if err := a.blacklist.reloadFiles(); err != nil {
 		log.Printf("failed to reload blacklist hash files: %v", err)
 	}
@@ -538,16 +743,24 @@ func (a *Agent) enforceBlacklist(tgid, pid, ppid, uid uint32, comm, path, hash, 
 	}
 	data, _ := json.Marshal(al)
 	log.Printf("alert=%s", data)
+	a.metricsMu.Lock()
 	a.metrics.Alerts++
 	a.metrics.BlacklistMatches++
+	a.metricsMu.Unlock()
 	if a.options.DryRun {
 		return
 	}
+	a.metricsMu.Lock()
+	a.metrics.Blocks++
+	a.metricsMu.Unlock()
 	a.enforceTGID(tgid, sensor.BlockActionKill, reason)
 	log.Printf("enforced blacklist tgid=%d reason=%q path=%q sha256=%s", tgid, reason, path, hash)
 }
 
 func (a *Agent) state(ev sensor.Event) *procState {
+	if ev.Timestamp.IsZero() {
+		ev.Timestamp = time.Now()
+	}
 	state := a.procs[ev.TGID]
 	if state == nil {
 		state = &procState{
@@ -566,7 +779,41 @@ func (a *Agent) state(ev sensor.Event) *procState {
 }
 
 func (a *Agent) prune(state *procState, now time.Time) {
-	if state.FirstSeen.IsZero() || now.Sub(state.FirstSeen) <= a.policy.Window {
+	if state == nil || a.policy.Window <= 0 {
+		return
+	}
+	if len(state.history) == 0 {
+		if state.FirstSeen.IsZero() || now.Sub(state.FirstSeen) <= a.policy.Window {
+			return
+		}
+		state.Score = 0
+		state.EventCount = 0
+		state.WriteCount = 0
+		state.Reasons = nil
+		state.RecentEvents = nil
+		state.HighRateScored = false
+		state.Features = procFeatures{}
+		state.seenPaths = nil
+		state.openWritePaths = nil
+		state.initFeatureMaps()
+		state.FirstSeen = now
+		return
+	}
+	retained := state.history[:0]
+	for _, event := range state.history {
+		if event.At.IsZero() || now.Sub(event.At) <= a.policy.Window {
+			retained = append(retained, event)
+		}
+	}
+	if len(retained) == len(state.history) {
+		return
+	}
+	state.history = retained
+	a.rebuildWindow(state)
+}
+
+func (a *Agent) rebuildWindow(state *procState) {
+	if state == nil {
 		return
 	}
 	state.Score = 0
@@ -579,7 +826,62 @@ func (a *Agent) prune(state *procState, now time.Time) {
 	state.seenPaths = nil
 	state.openWritePaths = nil
 	state.initFeatureMaps()
-	state.FirstSeen = now
+	state.FirstSeen = time.Time{}
+	for _, event := range state.history {
+		if event.At.IsZero() {
+			continue
+		}
+		if state.FirstSeen.IsZero() || event.At.Before(state.FirstSeen) {
+			state.FirstSeen = event.At
+		}
+		state.Score += event.Score
+		state.EventCount++
+		state.WriteCount += event.WriteCount
+		state.RecentEvents = append(state.RecentEvents, scoredEvent{
+			At:     event.At,
+			Type:   event.Type,
+			Path:   event.Path,
+			Path2:  event.Path2,
+			Score:  event.Score,
+			Reason: event.Reason,
+		})
+		state.Reasons = appendReason(state.Reasons, event.Reason)
+		for _, path := range event.FeaturePaths {
+			if path == "" {
+				continue
+			}
+			if _, exists := state.seenPaths[path]; !exists && len(state.seenPaths) < maxTrackedPaths {
+				state.seenPaths[path] = struct{}{}
+			}
+		}
+		if event.OpenWritePath != "" {
+			if _, exists := state.openWritePaths[event.OpenWritePath]; !exists && len(state.openWritePaths) < maxTrackedPaths {
+				state.openWritePaths[event.OpenWritePath] = struct{}{}
+			}
+		}
+		if event.RenameSuffix {
+			state.Features.RenameSuffixCount++
+		}
+	}
+	state.Features.DistinctPaths = len(state.seenPaths)
+	state.Features.OpenWritePairs = len(state.openWritePaths)
+	for _, event := range state.history {
+		if event.FinalizeSignal {
+			state.Features.EncryptionState = "FINALIZE"
+			break
+		}
+	}
+	if state.Features.EncryptionState == "" && (state.Features.OpenWritePairs >= 3 || state.Features.DistinctPaths >= 3) {
+		state.Features.EncryptionState = "STAGE"
+	}
+	if state.WriteCount >= 64 {
+		state.Score += a.policy.Scores.HighRateBonus
+		state.HighRateScored = true
+		state.Reasons = appendReason(state.Reasons, "high-rate file mutation")
+	}
+	if len(state.RecentEvents) > maxRecentEvents {
+		state.RecentEvents = state.RecentEvents[len(state.RecentEvents)-maxRecentEvents:]
+	}
 }
 
 func (state *procState) initFeatureMaps() {
@@ -597,10 +899,14 @@ func (a *Agent) recordFeatures(state *procState, ev sensor.Event) {
 		if path == "" {
 			continue
 		}
-		state.seenPaths[path] = struct{}{}
+		if _, exists := state.seenPaths[path]; !exists && len(state.seenPaths) < maxTrackedPaths {
+			state.seenPaths[path] = struct{}{}
+		}
 	}
 	if ev.Type == sensor.EventOpen && isWriteOpen(ev.Arg0) && ev.Path != "" {
-		state.openWritePaths[ev.Path] = struct{}{}
+		if _, exists := state.openWritePaths[ev.Path]; !exists && len(state.openWritePaths) < maxTrackedPaths {
+			state.openWritePaths[ev.Path] = struct{}{}
+		}
 	}
 	if ev.Type == sensor.EventRename && a.hasSuspiciousExtension(ev.Path2) {
 		state.Features.RenameSuffixCount++
@@ -767,9 +1073,33 @@ func (a *Agent) logRingbufDrops() {
 	if delta > 0 {
 		log.Printf("ringbuf_drops total=%d delta=%d", drops, delta)
 	}
+	gaps, err := a.sensor.CaptureGaps()
+	if err != nil {
+		if a.options.DebugEvents {
+			log.Printf("failed to read capture gap counter: %v", err)
+		}
+		return
+	}
+	if delta := a.captureGapDelta(gaps); delta > 0 {
+		log.Printf("capture_gaps total=%d delta=%d", gaps, delta)
+	}
+}
+
+func (a *Agent) captureGapDelta(current uint64) uint64 {
+	a.metricsMu.Lock()
+	defer a.metricsMu.Unlock()
+	previous := a.lastCaptureGaps
+	a.lastCaptureGaps = current
+	a.metrics.CaptureGapsTotal = current
+	if current < previous {
+		return current
+	}
+	return current - previous
 }
 
 func (a *Agent) ringbufDropDelta(current uint64) uint64 {
+	a.metricsMu.Lock()
+	defer a.metricsMu.Unlock()
 	previous := a.lastDrops
 	a.lastDrops = current
 	a.metrics.RingbufDropsTotal = current
@@ -780,9 +1110,11 @@ func (a *Agent) ringbufDropDelta(current uint64) uint64 {
 }
 
 func (a *Agent) logMetrics() {
+	a.metricsMu.Lock()
 	a.metrics.SchemaVersion = "v1"
 	a.metrics.Kind = "ebpffls_metrics"
 	data, _ := json.Marshal(a.metrics)
+	a.metricsMu.Unlock()
 	log.Printf("metrics=%s", data)
 }
 
@@ -1016,18 +1348,62 @@ func (a *Agent) selfProtectSensitiveEvent(ev sensor.Event) bool {
 }
 
 func (a *Agent) block(state *procState) {
-	state.Blocked = true
-	a.alertAndEnforce(state, "behavior threshold", a.policy.Action)
+	action := normalizeAction(strings.ToLower(strings.TrimSpace(a.policy.Action)))
+	if action != "log" {
+		state.Blocked = true
+		state.BlockedAt = state.LastSeen
+		if state.BlockedAt.IsZero() {
+			state.BlockedAt = time.Now()
+		}
+	}
+	a.alertAndEnforce(state, "behavior threshold", action)
+}
+
+func (a *Agent) stateBlocked(state *procState, now time.Time) bool {
+	if state == nil || !state.Blocked {
+		return false
+	}
+	if a.policy.BlockTTL <= 0 || state.BlockedAt.IsZero() {
+		return true
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if now.Sub(state.BlockedAt) <= a.policy.BlockTTL {
+		return true
+	}
+	state.Blocked = false
+	state.BlockedAt = time.Time{}
+	return false
 }
 
 func (a *Agent) alertAndEnforce(state *procState, reason string, action string) {
+	if state == nil {
+		return
+	}
+	action = normalizeAction(strings.ToLower(strings.TrimSpace(action)))
+	a.emitAlert(state, action, a.options.DryRun)
+
+	if a.options.DryRun || action == "log" {
+		if a.options.DryRun && action != "log" {
+			a.rememberBlocked(state.TGID)
+		}
+		return
+	}
+	a.metricsMu.Lock()
+	a.metrics.Blocks++
+	a.metricsMu.Unlock()
+	a.enforceTGID(state.TGID, blockAction(action), reason)
+}
+
+func (a *Agent) emitAlert(state *procState, action string, dryRun bool) {
 	al := alert{
 		SchemaVersion: "v1",
 		Kind:          "ransomware_alert",
 		At:            time.Now(),
 		Policy:        a.policy.Name,
-		Action:        normalizeAction(action),
-		DryRun:        a.options.DryRun,
+		Action:        action,
+		DryRun:        dryRun,
 		TGID:          state.TGID,
 		PID:           state.PID,
 		PPID:          state.PPID,
@@ -1041,16 +1417,9 @@ func (a *Agent) alertAndEnforce(state *procState, reason string, action string) 
 	}
 	data, _ := json.Marshal(al)
 	log.Printf("alert=%s", data)
+	a.metricsMu.Lock()
 	a.metrics.Alerts++
-
-	if a.options.DryRun || action == "log" {
-		if a.options.DryRun && action != "log" {
-			a.rememberBlocked(state.TGID)
-		}
-		return
-	}
-	a.metrics.Blocks++
-	a.enforceTGID(state.TGID, blockAction(action), reason)
+	a.metricsMu.Unlock()
 }
 
 func (a *Agent) inProtectedScope(path string) bool {
@@ -1090,7 +1459,7 @@ func (a *Agent) networkAllowed(ev sensor.Event) bool {
 }
 
 func (a *Agent) inPolicyCgroup(tgid uint32) bool {
-	if len(a.policy.CgroupPaths) == 0 {
+	if !hasConfiguredPaths(a.policy.CgroupPaths) {
 		return true
 	}
 	info, err := readProc(tgid)
@@ -1101,10 +1470,19 @@ func (a *Agent) inPolicyCgroup(tgid uint32) bool {
 }
 
 func (a *Agent) procInPolicyCgroup(proc procInfo) bool {
-	if len(a.policy.CgroupPaths) == 0 {
+	if !hasConfiguredPaths(a.policy.CgroupPaths) {
 		return true
 	}
 	return matchesCgroupPath(proc.Cgroup, a.policy.CgroupPaths)
+}
+
+func hasConfiguredPaths(paths []string) bool {
+	for _, path := range paths {
+		if strings.TrimSpace(path) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Agent) isTrustedEvent(ev sensor.Event) bool {
@@ -1162,7 +1540,7 @@ func (a *Agent) procInfo(tgid uint32, seen time.Time) (procInfo, error) {
 	a.procMu.RLock()
 	cached, ok := a.procInfos[tgid]
 	a.procMu.RUnlock()
-	if ok && cached.Info.Exe != "" {
+	if ok && cached.Info.Exe != "" && !cached.NeedsRefresh {
 		a.procMu.Lock()
 		cached.LastSeen = seen
 		a.procInfos[tgid] = cached
@@ -1170,9 +1548,9 @@ func (a *Agent) procInfo(tgid uint32, seen time.Time) (procInfo, error) {
 		return cached.Info, nil
 	}
 
-	info, err := readProc(tgid)
+	info, err := a.readProcessInfo(tgid)
 	if err != nil {
-		if ok {
+		if ok && !cached.NeedsRefresh {
 			a.procMu.Lock()
 			cached.LastSeen = seen
 			a.procInfos[tgid] = cached
@@ -1182,42 +1560,53 @@ func (a *Agent) procInfo(tgid uint32, seen time.Time) (procInfo, error) {
 		return procInfo{}, err
 	}
 	a.procMu.Lock()
-	a.procInfos[tgid] = cachedProcInfo{Info: info, LastSeen: seen}
+	a.procInfos[tgid] = cachedProcInfo{Info: info, LastSeen: seen, NeedsRefresh: cached.NeedsRefresh}
 	a.procMu.Unlock()
 	return info, nil
 }
 
-func (a *Agent) cacheProcInfo(tgid uint32, seen time.Time) {
-	_, _ = a.procInfo(tgid, seen)
+func (a *Agent) readProcessInfo(tgid uint32) (procInfo, error) {
+	if a.procReader != nil {
+		return a.procReader(tgid)
+	}
+	return readProc(tgid)
 }
 
 func (a *Agent) cacheExecInfo(ev sensor.Event) {
-	if ev.Path == "" {
-		a.cacheProcInfo(ev.TGID, ev.Timestamp)
-		return
-	}
 	seen := ev.Timestamp
 	if seen.IsZero() {
 		seen = time.Now()
 	}
 	a.procMu.Lock()
-	a.procInfos[ev.TGID] = cachedProcInfo{
-		Info: procInfo{
-			PID:  ev.PID,
-			TGID: ev.TGID,
-			UID:  ev.UID,
-			Comm: ev.Comm,
-			Exe:  ev.Path,
-		},
-		LastSeen: seen,
+	cached := a.procInfos[ev.TGID]
+	cached.LastSeen = seen
+	cached.NeedsRefresh = true
+	a.procInfos[ev.TGID] = cached
+	a.procMu.Unlock()
+
+	// An attempted target is not the executable identity. Without a confirmed
+	// exec (including old sensors), keep reading procfs instead of trusting a
+	// pre-exec cache that can outlive a successful process replacement.
+	if ev.Phase != sensor.PhaseSuccess || ev.Source != sensor.SourceSched {
+		return
 	}
+	info, err := a.readProcessInfo(ev.TGID)
+	if err != nil || info.Exe == "" {
+		return
+	}
+	a.procMu.Lock()
+	a.procInfos[ev.TGID] = cachedProcInfo{Info: info, LastSeen: seen}
 	a.procMu.Unlock()
 }
 
 func (a *Agent) hasSuspiciousExtension(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	for _, candidate := range a.policy.SuspiciousExtensions {
-		if ext == strings.ToLower(candidate) {
+		candidate = strings.ToLower(strings.TrimSpace(candidate))
+		if candidate != "" && !strings.HasPrefix(candidate, ".") {
+			candidate = "." + candidate
+		}
+		if ext == candidate {
 			return true
 		}
 	}
@@ -1227,7 +1616,7 @@ func (a *Agent) hasSuspiciousExtension(path string) bool {
 func (a *Agent) isRansomNote(path string) bool {
 	base := strings.ToLower(filepath.Base(path))
 	for _, candidate := range a.policy.RansomNoteNames {
-		if base == strings.ToLower(candidate) {
+		if base == strings.ToLower(strings.TrimSpace(candidate)) {
 			return true
 		}
 	}
@@ -1244,6 +1633,12 @@ func hasDirPrefix(path string, dirs []string) bool {
 		}
 		cleanDir := filepath.Clean(dir)
 		cleanPath := filepath.Clean(path)
+		if cleanDir == "/" {
+			if strings.HasPrefix(cleanPath, "/") {
+				return true
+			}
+			continue
+		}
 		if cleanPath == cleanDir || strings.HasPrefix(cleanPath, cleanDir+"/") {
 			return true
 		}
@@ -1261,6 +1656,12 @@ func matchesAnyPath(path string, candidates []string) bool {
 			continue
 		}
 		cleanCandidate := filepath.Clean(candidate)
+		if cleanCandidate == "/" {
+			if strings.HasPrefix(cleanPath, "/") {
+				return true
+			}
+			continue
+		}
 		if cleanPath == cleanCandidate || strings.HasPrefix(cleanPath, cleanCandidate+"/") {
 			return true
 		}
@@ -1280,6 +1681,12 @@ func matchesCgroupPath(path string, candidates []string) bool {
 		cleanCandidate := filepath.Clean(candidate)
 		if cleanCandidate == "." {
 			cleanCandidate = "/"
+		}
+		if cleanCandidate == "/" {
+			if strings.HasPrefix(cleanPath, "/") {
+				return true
+			}
+			continue
 		}
 		if cleanPath == cleanCandidate || strings.HasPrefix(cleanPath, cleanCandidate+"/") {
 			return true

@@ -58,7 +58,7 @@ func monitor(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	s, err := sensor.New(policy)
+	s, err := sensor.NewWithOptions(policy, sensor.Options{DryRun: *dryRun})
 	if err != nil {
 		return fmt.Errorf("%w; run as root and ensure BTF, tracepoints, kprobes, and required BPF permissions are available", err)
 	}

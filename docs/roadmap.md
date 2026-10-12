@@ -1,7 +1,8 @@
 # 开发路线图
 
-> 更新：2026-06-09  
-> 基于当前四轨架构与 [调用抽象](./ransomware-call-abstraction.md)
+> 更新：2026-09-07
+>
+> 基于当前四轨架构与 [调用抽象](./ransomware-call-abstraction.md)。下方 Phase 1-4 保留历史能力记录，不表示本轮重新验收；下一轮以 [自适应检测开发计划](./adaptive-detection-plan.md) 为准。
 
 ---
 
@@ -16,10 +17,12 @@
 
 ### 已知缺口
 
-- 文档曾与代码不一致（已在本次更新中对齐）
+- `rules[]` 目前只有单特征阈值比较；组合条件与真正的时序状态机尚未完成
+- 零分事件先于特征记录被丢弃；首条 log 规则命中会跳过后续规则和总分判定，接入新检测器前需显式设计仲裁与兼容迁移
+- 缺少进程实例键和事件侧 workload 身份；事件 v2 已区分 exec 尝试/成功确认、open 结果和 write/pwrite/writev 请求/结果，其他 syscall 的完整结果语义仍待补齐，见 [事件契约](./event-abi.md)
 - `write` 已基于 agent fd→path 缓存计分；close/dup 与相对 dirfd 已跟踪
 - `procState`、fd→path 与 blocked lineage 缓存已按空闲 TTL 定期淘汰；ringbuf reserve 失败已有内核计数和用户态增量日志
-- BPF IOC 已从 yaml 同步到 map；path-based LSM IOC 已受 `protected_dirs` inode 作用域约束
+- BPF IOC、保护域和有效动作已同步到 map；dry-run/log 只观测，deny/kill 才启用 path-based LSM IOC 强制
 - blocked lineage exec 已做 kill 传播；dry-run/评分路径输出 `exec_after_blocked`
 - kprobe attach 已按架构选择候选符号；deny 动作已用 `bpf_override_return(-EPERM)` 同步拒绝
 - io_uring 已有基础 `io_uring_enter` 观测；不解析 SQE 内容，仍属于弱覆盖
@@ -64,9 +67,9 @@
 
 | ID | 任务 | 产出 |
 |----|------|------|
-| 2.1 | `procFeatures`：`distinct_paths`、`open_write_pairs`、`rename_suffix_count` | 已完成：alert JSON 输出 L2 特征向量 |
-| 2.2 | yaml 支持 `rules[]`（when 组合 + action） | 已完成：基于特征阈值的 rules[] DSL |
-| 2.3 | 加密状态机：`SCAN`→`STAGE`→`FINALIZE`（先实现 STAGE/FINALIZE） | 已完成：STAGE/FINALIZE 输出到特征向量 |
+| 2.1 | `procFeatures`：`distinct_paths`、`open_write_pairs`、`rename_suffix_count` | 已有输出；`open_write_pairs` 实际为可写 open 的不同路径数，真实 open -> write 配对待开发 |
+| 2.2 | yaml 支持 `rules[]`（when 组合 + action） | 部分完成：仅单特征比较；all/any/sequence 和统一仲裁待开发 |
+| 2.3 | 加密状态机：`SCAN`→`STAGE`→`FINALIZE`（先实现 STAGE/FINALIZE） | 部分完成：已有 STAGE/FINALIZE 标签，未验证有序状态转换，真正时序检测待开发 |
 | 2.4 | trust 模型升级：comm + exe 路径 + uid；备份破坏不减分 | 已完成 |
 | 2.5 | ftruncate fd→path 解析 | 已完成：复用 open/openat/openat2 fd→path 缓存 |
 | 2.6 | 结构化 metrics：alert/block/blacklist 计数导出 | 已完成：周期性 `metrics={...}` 结构化日志 |
@@ -111,6 +114,8 @@
 
 ## 里程碑建议
 
+以下为历史版本划分，不构成正式发布完成声明；“fork 传播”目前仅有 blocked lineage exec 路径，不是完整 fork/exit 进程谱系。
+
 ```
 v0.2  Phase 1 完成 — 策略统一、write 闭环、fork 传播
 v0.3  Phase 2 完成 — 特征向量 + rules DSL
@@ -118,6 +123,21 @@ v0.4  Phase 3 前半 — mmap/copy_file_range/io_uring + 多 arch
 v0.5  Phase 3 后半 — deny override + scan 预警
 v1.0  Phase 4 核心 — 测试套件 + 自保护 + 文档稳定
 ```
+
+---
+
+## 下一轮：自适应行为检测
+
+目标是融合竞品中有证据支持的上下文、短序列、基线与分层采集，避免继续只堆全局积分阈值。详见 [研究复核](./ebpf-ml-security-research.md) 与 [实施 Backlog / 验收门槛](./adaptive-detection-plan.md)。P0 的 AD-00/01 首批已进入实现与验收，其余待开发：
+
+| 顺序 | 交付 | Gate |
+|------|------|------|
+| P0 | 回放基线、事件成功语义、进程实例/workload 身份、证据仲裁 | failed exec、PID/FD 重用、log 不吞强制及三种 BPF 传输路径有回归 |
+| P1 | 评分前特征、多时间窗、可组合时序、跨进程关联 | 无后缀/慢速/多进程模拟与编辑器/备份等良性对照 |
+| P2 | workload 基线、冻结与漂移、带预算升级采集 | 冷启动/发布变化、丢失质量、迟滞/TTL、实际业务开销 |
+| P3 | 轻量模型离线对照和用户态 shadow | 同隔离测试集上有增量收益；模型不单独 kill |
+
+首批已新增确定性回放、事件 ABI v2、失败 exec 身份修正和三传输路径结果测试，边界与验证记录见 [Event ABI v2](./event-abi.md)。下一批先完成 AD-02 进程实例契约，再落实 AD-03 证据仲裁；P0 尚未整体完成。仅在回放、Docker 和所需 active LSM 环境通过后逐步启用新引擎；保留旧配置和显式回滚，不将 shadow 判定直接用于强制。
 
 ---
 
@@ -135,3 +155,5 @@ v1.0  Phase 4 核心 — 测试套件 + 自保护 + 文档稳定
 - [strategy.md](./strategy.md) — 架构与响应级别
 - [ransomware-call-abstraction.md](./ransomware-call-abstraction.md) — 调用抽象
 - [review-consolidated.md](./review-consolidated.md) — 合并 review
+- [ebpf-ml-security-research.md](./ebpf-ml-security-research.md) — 竞品证据与取舍
+- [adaptive-detection-plan.md](./adaptive-detection-plan.md) — 下一轮开发与验收

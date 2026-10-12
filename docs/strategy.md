@@ -79,6 +79,12 @@ protected directories. `file_open` keeps only marked-TGID enforcement because
 full path-scoped IOC matching there exceeds verifier complexity on the reference
 kernel; open/write behavior remains covered by tracepoint scoring.
 
+The effective inline IOC action is also stored in a BPF map. Dry-run and
+`action: log` use observe-only mode. `deny` returns `-EPERM`; `kill` additionally
+sends `SIGKILL`. Enforced inline IOCs emit a ring-buffer audit record so the
+agent still produces a structured alert when the normal syscall exit event is
+suppressed by LSM denial.
+
 BPF LSM hard-deny requires Linux 5.7+ plus active `bpf` in
 `/sys/kernel/security/lsm`. `bpf_override_return(-EPERM)` requires 4.16+,
 `CONFIG_BPF_KPROBE_OVERRIDE`, and syscall error injection support. Both are

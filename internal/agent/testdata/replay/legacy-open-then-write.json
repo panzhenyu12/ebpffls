@@ -1,0 +1,15 @@
+{
+  "schema_version": "agent-replay/v1",
+  "baseline": "legacy-v1",
+  "id": "legacy-open-then-write",
+  "classification": "known-limitation",
+  "description": "Adding a write attempt after successful writable open leaves open_write_pairs unchanged; v1 cannot prove the write succeeded or report actual bytes.",
+  "follow_up": "AD-01/04: compare open-only against successful, failed, and partial writes using v2 result semantics, not requested size as a success label.",
+  "policy": {"window_ms": 10000, "threshold": 100, "action": "log", "write_score": 1},
+  "events": [
+    {"at_ms": 0, "type": "open", "arg0": 1, "arg1": 3, "path": "/replay/protected/a",
+      "want": {"tracked_fds": 1, "state": {"score": 1, "event_count": 1, "write_count": 1, "features": {"distinct_paths": 1, "open_write_pairs": 1}, "reasons": ["write-open in protected scope"], "history_types": ["open"]}}},
+    {"at_ms": 1000, "type": "write", "arg0": 3, "size": 4096,
+      "want": {"tracked_fds": 1, "state": {"score": 2, "event_count": 2, "write_count": 2, "last_seen_ms": 1000, "features": {"distinct_paths": 1, "open_write_pairs": 1}, "reasons": ["write-open in protected scope", "write syscall on protected fd"], "history_types": ["open", "write"]}}}
+  ]
+}

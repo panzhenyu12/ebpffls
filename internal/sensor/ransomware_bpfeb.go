@@ -34,6 +34,14 @@ type ransomwarePendingOpen struct {
 	Path  [256]int8
 }
 
+type ransomwarePendingWrite struct {
+	OperationId uint64
+	Size        uint64
+	SyscallId   int64
+	Fd          int32
+	Vector      uint32
+}
+
 // loadRansomware returns the embedded CollectionSpec for ransomware.
 func loadRansomware() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_RansomwareBytes)
@@ -82,6 +90,7 @@ type ransomwareProgramSpecs struct {
 	EnforceInodeRename       *ebpf.ProgramSpec `ebpf:"enforce_inode_rename"`
 	EnforcePathMknod         *ebpf.ProgramSpec `ebpf:"enforce_path_mknod"`
 	EnforcePathRename        *ebpf.ProgramSpec `ebpf:"enforce_path_rename"`
+	EnforcePathRenameLegacy  *ebpf.ProgramSpec `ebpf:"enforce_path_rename_legacy"`
 	EnforcePathTruncate      *ebpf.ProgramSpec `ebpf:"enforce_path_truncate"`
 	EnforcePathUnlink        *ebpf.ProgramSpec `ebpf:"enforce_path_unlink"`
 	KpOverrideCopyFileRange  *ebpf.ProgramSpec `ebpf:"kp_override_copy_file_range"`
@@ -114,6 +123,7 @@ type ransomwareProgramSpecs struct {
 	TraceDup3                *ebpf.ProgramSpec `ebpf:"trace_dup3"`
 	TraceDup3Exit            *ebpf.ProgramSpec `ebpf:"trace_dup3_exit"`
 	TraceDupExit             *ebpf.ProgramSpec `ebpf:"trace_dup_exit"`
+	TraceExecSuccess         *ebpf.ProgramSpec `ebpf:"trace_exec_success"`
 	TraceExecve              *ebpf.ProgramSpec `ebpf:"trace_execve"`
 	TraceFcntl               *ebpf.ProgramSpec `ebpf:"trace_fcntl"`
 	TraceFcntlExit           *ebpf.ProgramSpec `ebpf:"trace_fcntl_exit"`
@@ -127,7 +137,9 @@ type ransomwareProgramSpecs struct {
 	TraceOpenat2             *ebpf.ProgramSpec `ebpf:"trace_openat2"`
 	TraceOpenat2Exit         *ebpf.ProgramSpec `ebpf:"trace_openat2_exit"`
 	TraceOpenatExit          *ebpf.ProgramSpec `ebpf:"trace_openat_exit"`
+	TraceProcessExit         *ebpf.ProgramSpec `ebpf:"trace_process_exit"`
 	TracePwrite64            *ebpf.ProgramSpec `ebpf:"trace_pwrite64"`
+	TracePwrite64Exit        *ebpf.ProgramSpec `ebpf:"trace_pwrite64_exit"`
 	TraceRename              *ebpf.ProgramSpec `ebpf:"trace_rename"`
 	TraceRenameat            *ebpf.ProgramSpec `ebpf:"trace_renameat"`
 	TraceRenameat2           *ebpf.ProgramSpec `ebpf:"trace_renameat2"`
@@ -137,7 +149,9 @@ type ransomwareProgramSpecs struct {
 	TraceUnlink              *ebpf.ProgramSpec `ebpf:"trace_unlink"`
 	TraceUnlinkat            *ebpf.ProgramSpec `ebpf:"trace_unlinkat"`
 	TraceWrite               *ebpf.ProgramSpec `ebpf:"trace_write"`
+	TraceWriteExit           *ebpf.ProgramSpec `ebpf:"trace_write_exit"`
 	TraceWritev              *ebpf.ProgramSpec `ebpf:"trace_writev"`
+	TraceWritevExit          *ebpf.ProgramSpec `ebpf:"trace_writev_exit"`
 }
 
 // ransomwareMapSpecs contains maps before they are loaded into the kernel.
@@ -146,12 +160,15 @@ type ransomwareProgramSpecs struct {
 type ransomwareMapSpecs struct {
 	AllowedCgroups     *ebpf.MapSpec `ebpf:"allowed_cgroups"`
 	BlockedTgids       *ebpf.MapSpec `ebpf:"blocked_tgids"`
+	CaptureGaps        *ebpf.MapSpec `ebpf:"capture_gaps"`
 	CgroupScopeEnabled *ebpf.MapSpec `ebpf:"cgroup_scope_enabled"`
 	Events             *ebpf.MapSpec `ebpf:"events"`
+	InlineIocAction    *ebpf.MapSpec `ebpf:"inline_ioc_action"`
 	IocExtensions      *ebpf.MapSpec `ebpf:"ioc_extensions"`
 	IocRansomNotes     *ebpf.MapSpec `ebpf:"ioc_ransom_notes"`
 	PendingDups        *ebpf.MapSpec `ebpf:"pending_dups"`
 	PendingOpens       *ebpf.MapSpec `ebpf:"pending_opens"`
+	PendingWrites      *ebpf.MapSpec `ebpf:"pending_writes"`
 	ProtectedDirs      *ebpf.MapSpec `ebpf:"protected_dirs"`
 	RingbufDrops       *ebpf.MapSpec `ebpf:"ringbuf_drops"`
 }
@@ -177,12 +194,15 @@ func (o *ransomwareObjects) Close() error {
 type ransomwareMaps struct {
 	AllowedCgroups     *ebpf.Map `ebpf:"allowed_cgroups"`
 	BlockedTgids       *ebpf.Map `ebpf:"blocked_tgids"`
+	CaptureGaps        *ebpf.Map `ebpf:"capture_gaps"`
 	CgroupScopeEnabled *ebpf.Map `ebpf:"cgroup_scope_enabled"`
 	Events             *ebpf.Map `ebpf:"events"`
+	InlineIocAction    *ebpf.Map `ebpf:"inline_ioc_action"`
 	IocExtensions      *ebpf.Map `ebpf:"ioc_extensions"`
 	IocRansomNotes     *ebpf.Map `ebpf:"ioc_ransom_notes"`
 	PendingDups        *ebpf.Map `ebpf:"pending_dups"`
 	PendingOpens       *ebpf.Map `ebpf:"pending_opens"`
+	PendingWrites      *ebpf.Map `ebpf:"pending_writes"`
 	ProtectedDirs      *ebpf.Map `ebpf:"protected_dirs"`
 	RingbufDrops       *ebpf.Map `ebpf:"ringbuf_drops"`
 }
@@ -191,12 +211,15 @@ func (m *ransomwareMaps) Close() error {
 	return _RansomwareClose(
 		m.AllowedCgroups,
 		m.BlockedTgids,
+		m.CaptureGaps,
 		m.CgroupScopeEnabled,
 		m.Events,
+		m.InlineIocAction,
 		m.IocExtensions,
 		m.IocRansomNotes,
 		m.PendingDups,
 		m.PendingOpens,
+		m.PendingWrites,
 		m.ProtectedDirs,
 		m.RingbufDrops,
 	)
@@ -213,6 +236,7 @@ type ransomwarePrograms struct {
 	EnforceInodeRename       *ebpf.Program `ebpf:"enforce_inode_rename"`
 	EnforcePathMknod         *ebpf.Program `ebpf:"enforce_path_mknod"`
 	EnforcePathRename        *ebpf.Program `ebpf:"enforce_path_rename"`
+	EnforcePathRenameLegacy  *ebpf.Program `ebpf:"enforce_path_rename_legacy"`
 	EnforcePathTruncate      *ebpf.Program `ebpf:"enforce_path_truncate"`
 	EnforcePathUnlink        *ebpf.Program `ebpf:"enforce_path_unlink"`
 	KpOverrideCopyFileRange  *ebpf.Program `ebpf:"kp_override_copy_file_range"`
@@ -245,6 +269,7 @@ type ransomwarePrograms struct {
 	TraceDup3                *ebpf.Program `ebpf:"trace_dup3"`
 	TraceDup3Exit            *ebpf.Program `ebpf:"trace_dup3_exit"`
 	TraceDupExit             *ebpf.Program `ebpf:"trace_dup_exit"`
+	TraceExecSuccess         *ebpf.Program `ebpf:"trace_exec_success"`
 	TraceExecve              *ebpf.Program `ebpf:"trace_execve"`
 	TraceFcntl               *ebpf.Program `ebpf:"trace_fcntl"`
 	TraceFcntlExit           *ebpf.Program `ebpf:"trace_fcntl_exit"`
@@ -258,7 +283,9 @@ type ransomwarePrograms struct {
 	TraceOpenat2             *ebpf.Program `ebpf:"trace_openat2"`
 	TraceOpenat2Exit         *ebpf.Program `ebpf:"trace_openat2_exit"`
 	TraceOpenatExit          *ebpf.Program `ebpf:"trace_openat_exit"`
+	TraceProcessExit         *ebpf.Program `ebpf:"trace_process_exit"`
 	TracePwrite64            *ebpf.Program `ebpf:"trace_pwrite64"`
+	TracePwrite64Exit        *ebpf.Program `ebpf:"trace_pwrite64_exit"`
 	TraceRename              *ebpf.Program `ebpf:"trace_rename"`
 	TraceRenameat            *ebpf.Program `ebpf:"trace_renameat"`
 	TraceRenameat2           *ebpf.Program `ebpf:"trace_renameat2"`
@@ -268,7 +295,9 @@ type ransomwarePrograms struct {
 	TraceUnlink              *ebpf.Program `ebpf:"trace_unlink"`
 	TraceUnlinkat            *ebpf.Program `ebpf:"trace_unlinkat"`
 	TraceWrite               *ebpf.Program `ebpf:"trace_write"`
+	TraceWriteExit           *ebpf.Program `ebpf:"trace_write_exit"`
 	TraceWritev              *ebpf.Program `ebpf:"trace_writev"`
+	TraceWritevExit          *ebpf.Program `ebpf:"trace_writev_exit"`
 }
 
 func (p *ransomwarePrograms) Close() error {
@@ -280,6 +309,7 @@ func (p *ransomwarePrograms) Close() error {
 		p.EnforceInodeRename,
 		p.EnforcePathMknod,
 		p.EnforcePathRename,
+		p.EnforcePathRenameLegacy,
 		p.EnforcePathTruncate,
 		p.EnforcePathUnlink,
 		p.KpOverrideCopyFileRange,
@@ -312,6 +342,7 @@ func (p *ransomwarePrograms) Close() error {
 		p.TraceDup3,
 		p.TraceDup3Exit,
 		p.TraceDupExit,
+		p.TraceExecSuccess,
 		p.TraceExecve,
 		p.TraceFcntl,
 		p.TraceFcntlExit,
@@ -325,7 +356,9 @@ func (p *ransomwarePrograms) Close() error {
 		p.TraceOpenat2,
 		p.TraceOpenat2Exit,
 		p.TraceOpenatExit,
+		p.TraceProcessExit,
 		p.TracePwrite64,
+		p.TracePwrite64Exit,
 		p.TraceRename,
 		p.TraceRenameat,
 		p.TraceRenameat2,
@@ -335,7 +368,9 @@ func (p *ransomwarePrograms) Close() error {
 		p.TraceUnlink,
 		p.TraceUnlinkat,
 		p.TraceWrite,
+		p.TraceWriteExit,
 		p.TraceWritev,
+		p.TraceWritevExit,
 	)
 }
 

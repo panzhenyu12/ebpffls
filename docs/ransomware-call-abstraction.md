@@ -115,7 +115,9 @@ truncate(path, 0) 或 ftruncate(fd, 0)
 | `path_mknod` / `inode_create` | 创建可疑名 | `SO_CREATE_NOTE` |
 | `path_unlink` | 可疑名 | `SO_DELETE` |
 
-> 当前硬规则**全局生效**，且 IOC 列表在 BPF 内硬编码，与 yaml 未完全同步。
+> IOC 名称和保护目录由 YAML 同步到 BPF map；CLI dry-run 和 `action: log`
+> 只观测不拒绝，`deny` 返回 `-EPERM`，`kill` 额外发送 `SIGKILL`。内核拒绝
+> 会生成 inline IOC 审计事件，避免 syscall exit 不发生时丢失结构化告警。
 
 ### 4.3 执法轨（需先 BlockTGID）
 

@@ -1,0 +1,13 @@
+{
+  "schema_version": "agent-replay/v1",
+  "baseline": "legacy-v1",
+  "id": "legacy-open-only",
+  "classification": "known-limitation",
+  "description": "A successful writable open alone increments open_write_pairs and write_count despite no observed write syscall.",
+  "follow_up": "AD-04: preserve the legacy feature name for compatibility; introduce a separate success-aware paired-write feature.",
+  "policy": {"window_ms": 10000, "threshold": 100, "action": "log", "write_score": 1},
+  "events": [
+    {"at_ms": 0, "type": "open", "arg0": 1, "arg1": 3, "path": "/replay/protected/a",
+      "want": {"tracked_fds": 1, "state": {"score": 1, "event_count": 1, "write_count": 1, "features": {"distinct_paths": 1, "open_write_pairs": 1}, "reasons": ["write-open in protected scope"], "history_types": ["open"]}}}
+  ]
+}

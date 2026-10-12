@@ -1,0 +1,15 @@
+{
+  "schema_version": "agent-replay/v1",
+  "baseline": "legacy-v1",
+  "id": "legacy-zero-score-context",
+  "classification": "known-limitation",
+  "description": "Read-only open updates FD context but creates no scored process state or feature history; a subsequent write attempt is scored without knowing whether it succeeded.",
+  "follow_up": "AD-01/04: retain zero-score context before scoring, and distinguish failed writes from successful modifications. This synthetic legacy write can fail on a read-only FD.",
+  "policy": {"window_ms": 10000, "threshold": 100, "action": "log", "write_score": 1},
+  "events": [
+    {"at_ms": 0, "type": "open", "arg0": 0, "arg1": 3, "path": "/replay/protected/a",
+      "want": {"tracked_fds": 1, "state": null}},
+    {"at_ms": 1000, "type": "write", "arg0": 3, "size": 4096,
+      "want": {"tracked_fds": 1, "state": {"score": 1, "event_count": 1, "write_count": 1, "first_seen_ms": 1000, "last_seen_ms": 1000, "features": {"distinct_paths": 1}, "reasons": ["write syscall on protected fd"], "history_types": ["write"]}}}
+  ]
+}

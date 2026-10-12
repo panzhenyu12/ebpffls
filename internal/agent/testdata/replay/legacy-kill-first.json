@@ -1,0 +1,19 @@
+{
+  "schema_version": "agent-replay/v1",
+  "baseline": "legacy-v1",
+  "id": "legacy-kill-first",
+  "classification": "known-limitation",
+  "description": "Reordering the same legacy rules changes the candidate action from log to kill. Dry-run records the candidate but executes no signal or map update.",
+  "follow_up": "AD-03: retain a legacy comparison fixture while new arbitration must not downgrade authorized enforcement when rule order changes.",
+  "policy": {
+    "window_ms": 10000, "threshold": 1, "action": "kill", "write_score": 1,
+    "rules": [
+      {"name": "enforce", "feature": "distinct_paths", "op": ">=", "value": 1, "action": "kill", "reason": "enforce rule"},
+      {"name": "observe", "feature": "distinct_paths", "op": ">=", "value": 1, "action": "log", "reason": "observe rule"}
+    ]
+  },
+  "events": [
+    {"at_ms": 0, "type": "open", "arg0": 1, "arg1": 3, "path": "/replay/protected/a",
+      "want": {"tracked_fds": 1, "alerts": 1, "candidate_actions": [{"action": "kill", "dry_run": true}], "state": {"score": 1, "event_count": 1, "write_count": 1, "blocked": true, "features": {"distinct_paths": 1, "open_write_pairs": 1}, "reasons": ["write-open in protected scope", "enforce rule"], "history_types": ["open"]}}}
+  ]
+}
